@@ -111,17 +111,17 @@ class Transformer(nn.Module):
         """
         super(Transformer, self).__init__()
         hidden_dim = config.heads * config.head_dim
+        
         prelude = nn.Sequential(*[
                                   nn.Embedding(config.vocab_size, hidden_dim),
                                   ])
         body = nn.Sequential(*[Residual(Block(config)) for _ in range(config.depth)])
-
         postlude = nn.Sequential(*[
                                   nn.LayerNorm((hidden_dim)),
                                   nn.Linear(hidden_dim, config.vocab_size, True),
                                   nn.Softmax(dim=-1),
                                   ])
-        
+
         network = nn.Sequential(*[
                                   prelude, 
                                   body, 
