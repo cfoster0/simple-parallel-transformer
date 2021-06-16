@@ -51,9 +51,8 @@ class RotaryEmbedding(nn.Module):
         x1, x2 = x.unbind(dim = -2)
         return torch.cat((-x2, x1), dim = -1)
 
-    def forward(self, x):
-        seq_len = x.shape[-3]
-        freqs = self.freqs[:, -seq_len:]
+    def forward(self, x, start, end):
+        freqs = self.freqs[:, start:end]
         return (x * freqs.cos()) + (self.rotate_half(x) * freqs.sin())
 
 class Block(nn.Module):
@@ -82,6 +81,8 @@ class Block(nn.Module):
         self.rotary = RotaryEmbedding(config)
 
     def forward(self, x):
+      b, l, d = x.shape
+
       x = self.ln(x)
       x = self.in_proj(x)
       q, k, v, p = torch.split(x, [
@@ -91,7 +92,7 @@ class Block(nn.Module):
                                    self.hidden_dim * self.expansion_factor
                                    ], -1)
       (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b i h d", h=self.heads), (q, k, v))
-      (q, k) = map(lambda x: self.rotary(x), (q, k))
+      (q, k) = map(lambda x: self.rotary(x, 0, l), (q, k))
       a = einsum("bihd,bjhd -> bijh", q, k)
       o = einsum("bijh,bjhd -> bihd", a, v)
       o = rearrange(o, "b i h d -> b i (h d)")
