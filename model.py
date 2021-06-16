@@ -81,25 +81,25 @@ class Block(nn.Module):
         self.rotary = RotaryEmbedding(config)
 
     def forward(self, x):
-      b, l, d = x.shape
+        b, l, d = x.shape
 
-      x = self.ln(x)
-      x = self.in_proj(x)
-      q, k, v, p = torch.split(x, [
+        x = self.ln(x)
+        x = self.in_proj(x)
+        q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
                                    self.hidden_dim,
                                    self.hidden_dim,
                                    self.hidden_dim * self.expansion_factor
                                    ], -1)
-      (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b i h d", h=self.heads), (q, k, v))
-      (q, k) = map(lambda x: self.rotary(x, 0, l), (q, k))
-      a = einsum("bihd,bjhd -> bijh", q, k)
-      o = einsum("bijh,bjhd -> bihd", a, v)
-      o = rearrange(o, "b i h d -> b i (h d)")
-      p = F.gelu(p)
-      x = torch.cat([o, p], dim=-1)
-      x = self.out_proj(x)
-      return x
+        (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b i h d", h=self.heads), (q, k, v))
+        (q, k) = map(lambda x: self.rotary(x, 0, l), (q, k))
+        a = einsum("bihd,bjhd -> bijh", q, k)
+        o = einsum("bijh,bjhd -> bihd", a, v)
+        o = rearrange(o, "b i h d -> b i (h d)")
+        p = F.gelu(p)
+        x = torch.cat([o, p], dim=-1)
+        x = self.out_proj(x)
+        return x
 
 class Transformer(nn.Module):
     def __init__(self, config: Config):
