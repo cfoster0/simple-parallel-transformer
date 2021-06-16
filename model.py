@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Config:
-    """Class for keeping track config variables."""
+    """Class for keeping track of config variables."""
     depth: int
     heads: int
     head_dim: int
@@ -32,10 +32,10 @@ class Residual(nn.Module):
 class RotaryEmbedding(nn.Module):
     def __init__(self, config, max_seq_len=2048):
         """
-        In the constructor we cache relative positional embeddings. When called
-        in forward(), will assume that whatever is passed represents the last
-        N positions, so this will not work for autoregressive w/ caching. For
-        an intuitive look into rotary positional embeddings, see the below link:
+        In the constructor we generate rotary positional embeddings. When called
+        in forward(), we assume that the start and end positions are within the
+        bounds of 0 and max_seq_len. For an intuitive look into rotary 
+        positional embeddings, see the below link:
         https://blog.eleuther.ai/rotary-embeddings/
         """
         super().__init__()
