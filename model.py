@@ -72,12 +72,12 @@ class Block(nn.Module):
         self.head_dim = config.head_dim
         self.hidden_dim = self.heads * self.head_dim
         self.expansion_factor = config.expansion_factor
-        self.qkvl_dim = self.hidden_dim * (3 + self.expansion_factor)
-        self.vl_dim = self.hidden_dim * (1 + self.expansion_factor)
+        self.qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
+        self.vp_dim = self.hidden_dim * (1 + self.expansion_factor)
 
         self.ln = nn.LayerNorm(self.hidden_dim)
-        self.in_proj = nn.Linear(self.hidden_dim, self.qkvl_dim, False)
-        self.out_proj = nn.Linear(self.vl_dim, self.hidden_dim, False)
+        self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
+        self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, False)
         self.rotary = RotaryEmbedding(config)
 
     def forward(self, x):
