@@ -78,7 +78,7 @@ class Block(nn.Module):
 
         self.ln = nn.LayerNorm(self.hidden_dim)
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvl_dim, False)
-        self.out_proj = nn.Linear(self.vl_dim, self.hidden_dim)
+        self.out_proj = nn.Linear(self.vl_dim, self.hidden_dim, False)
         self.rotary = RotaryEmbedding(config)
 
     def forward(self, x):
