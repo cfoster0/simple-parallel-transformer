@@ -1,1 +1,1 @@
-from simple_parallel_transformer.simple_parallel_transformer import Transformer
+from simple_parallel_transformer.model import Transformer
