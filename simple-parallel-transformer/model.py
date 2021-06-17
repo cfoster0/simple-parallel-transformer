@@ -116,6 +116,7 @@ class Transformer(nn.Module):
         hidden representations become token distributions).
         """
         super(Transformer, self).__init__()
+        self.max_seq_len = config.max_seq_len
         hidden_dim = config.heads * config.head_dim
         
         prelude = nn.Sequential(*[
