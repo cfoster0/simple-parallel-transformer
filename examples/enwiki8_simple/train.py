@@ -12,6 +12,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
 import hydra
+from hydra.utils import get_original_cwd, to_absolute_path
 
 # constants
 
@@ -51,7 +52,7 @@ def train(cfg: Config) -> None:
 
     # prepare enwik8 data
 
-    with gzip.open('./data/enwik8.gz') as file:
+    with gzip.open(get_original_cwd() + '/./data/enwik8.gz') as file:
         X = np.fromstring(file.read(int(95e6)), dtype=np.uint8)
         trX, vaX = np.split(X, [int(90e6)])
         data_train, data_val = torch.from_numpy(trX), torch.from_numpy(vaX)
