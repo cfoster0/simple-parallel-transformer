@@ -17,7 +17,7 @@ setup(
   install_requires=[
     'torch>=1.6',
     'einops>=0.3',
-    'hydra',
+    'hydra-core',
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
