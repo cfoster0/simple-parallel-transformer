@@ -82,8 +82,8 @@ class Block(nn.Module):
         self.vff_dim = self.hidden_dim * (1 + self.expansion_factor)
 
         self.ln = nn.LayerNorm(self.hidden_dim)
-        self.in_proj = nn.Linear(self.hidden_dim, self.qkvff_dim, False)
-        self.out_proj = nn.Linear(self.vff_dim, self.hidden_dim, False)
+        self.in_proj = nn.Linear(self.hidden_dim, self.qkvff_dim, bias=False)
+        self.out_proj = nn.Linear(self.vff_dim, self.hidden_dim, bias=True)
         self.rotary = RotaryEmbedding(config)
 
     def forward(self, x):
@@ -129,7 +129,7 @@ class Transformer(nn.Module):
         body = nn.Sequential(*[Residual(Block(config)) for _ in range(config.depth)])
         postlude = nn.Sequential(*[
                                   nn.LayerNorm((hidden_dim)),
-                                  nn.Linear(hidden_dim, config.vocab_size, True),
+                                  nn.Linear(hidden_dim, config.vocab_size, bias=False),
                                   ])
 
         network = nn.Sequential(*[
