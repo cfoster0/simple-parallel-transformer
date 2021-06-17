@@ -49,7 +49,7 @@ class RotaryEmbedding(nn.Module):
         t = torch.arange(max_seq_len).type_as(inv_freq)
         freqs = torch.einsum('i , j -> i j', t, inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
-        torch.register_buffer('freqs', rearrange(emb, 'n d -> () n () d'))
+        self.register_buffer('freqs', rearrange(emb, 'n d -> () n () d'))
 
     def rotate_half(self, x):
         x = rearrange(x, '... (j d) -> ... j d', j = 2)
