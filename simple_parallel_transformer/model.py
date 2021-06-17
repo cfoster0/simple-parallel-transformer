@@ -129,7 +129,7 @@ class Transformer(nn.Module):
         body = nn.Sequential(*[Residual(Block(config)) for _ in range(config.depth)])
         postlude = nn.Sequential(*[
                                   nn.LayerNorm((hidden_dim)),
-                                  nn.Linear(hidden_dim, config.vocab_size, bias=False),
+                                  nn.Linear(hidden_dim, config.vocab_size, bias=True),
                                   ])
 
         network = nn.Sequential(*[
