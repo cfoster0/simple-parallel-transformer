@@ -60,7 +60,7 @@ class AutoregressiveWrapper(nn.Module):
             x = out[:, -self.max_seq_len:]
             mask = mask[:, -self.max_seq_len:]
 
-            logits = self.net(x, mask=mask, **kwargs)[:, -1, :]
+            logits = self.net(x, **kwargs)[:, -1, :]
 
             if filter_logits_fn in {top_k, top_p}:
                 filtered_logits = filter_logits_fn(logits, thres = filter_thres)
