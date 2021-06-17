@@ -15,6 +15,7 @@ class Config:
     heads: int
     head_dim: int
     vocab_size: int
+    max_seq_len: int = 2048
     expansion_factor: int = 4
         
 cs = ConfigStore.instance()
@@ -35,7 +36,7 @@ class Residual(nn.Module):
         return x + self.residual(x)
 
 class RotaryEmbedding(nn.Module):
-    def __init__(self, config, max_seq_len=2048):
+    def __init__(self, config):
         """
         In the constructor we generate rotary positional embeddings. When called
         in forward(), we assume that the start and end positions are within the
@@ -46,7 +47,7 @@ class RotaryEmbedding(nn.Module):
         super().__init__()
         dim = config.head_dim
         inv_freq = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-        t = torch.arange(max_seq_len).type_as(inv_freq)
+        t = torch.arange(config.max_seq_len).type_as(inv_freq)
         freqs = torch.einsum('i , j -> i j', t, inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
         self.register_buffer('freqs', rearrange(emb, 'n d -> () n () d'))
