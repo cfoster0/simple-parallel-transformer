@@ -6,6 +6,7 @@ from torch import einsum
 from einops import rearrange
 
 from dataclasses import dataclass
+from hydra.core.config_store import ConfigStore
 
 @dataclass
 class Config:
@@ -15,6 +16,10 @@ class Config:
     head_dim: int
     vocab_size: int
     expansion_factor: int = 4
+        
+cs = ConfigStore.instance()
+# Registering the Config class with the name 'config'.
+cs.store(name="config", node=Config)
 
 
 class Residual(nn.Module):
