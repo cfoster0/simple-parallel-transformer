@@ -99,7 +99,11 @@ class Block(nn.Module):
                                    ], -1)
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b i h d", h=self.heads), (q, k, v))
         (q, k) = map(lambda x: self.rotary(x, 0, l), (q, k))
-        a = einsum("bihd,bjhd -> bijh", q, k)
+        a = einsum("bihd,bjhd -> bijh", q, k) * (self.head_dim ** -0.5)
+        causal_mask = torch.tril(torch.ones((l, l), device=a.device))
+        causal_bias = -1e10 * (1. - causal_mask)
+        a += rearrange(causal_bias, "i j -> () i j ()")
+        a = F.softmax(a, dim=-2)
         o = einsum("bijh,bjhd -> bihd", a, v)
         o = rearrange(o, "b i h d -> b i (h d)")
         p = F.gelu(p)
@@ -126,7 +130,6 @@ class Transformer(nn.Module):
         postlude = nn.Sequential(*[
                                   nn.LayerNorm((hidden_dim)),
                                   nn.Linear(hidden_dim, config.vocab_size, True),
-                                  nn.Softmax(dim=-1),
                                   ])
 
         network = nn.Sequential(*[
