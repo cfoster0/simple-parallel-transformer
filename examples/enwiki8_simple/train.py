@@ -11,6 +11,9 @@ import torch.optim as optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
+import hydra
+from hydra.core.config_store import ConfigStore
+
 # constants
 
 NUM_BATCHES = int(1e5)
@@ -35,76 +38,77 @@ def decode_token(token):
 def decode_tokens(tokens):
     return ''.join(list(map(decode_token, tokens)))
 
-# instantiate GPT-like decoder model
 
-model = Transformer(
-    depth = 6,
-    heads = 8,
-    head_dim = 64,
-    vocab_size = 256,
-    expansion_factor = 4,
-    max_seq_len = SEQ_LEN,
-)
+@hydra.main(config_path=None, config_name="config")
+def train(cfg: Config) -> None:
+    # instantiate GPT-like decoder model
 
-model = AutoregressiveWrapper(model)
-model.cuda()
+    model = Transformer(
+        cfg
+    )
 
-# prepare enwik8 data
+    model = AutoregressiveWrapper(model)
+    model.cuda()
 
-with gzip.open('./data/enwik8.gz') as file:
-    X = np.fromstring(file.read(int(95e6)), dtype=np.uint8)
-    trX, vaX = np.split(X, [int(90e6)])
-    data_train, data_val = torch.from_numpy(trX), torch.from_numpy(vaX)
+    # prepare enwik8 data
 
-class TextSamplerDataset(Dataset):
-    def __init__(self, data, seq_len):
-        super().__init__()
-        self.data = data
-        self.seq_len = seq_len
+    with gzip.open('./data/enwik8.gz') as file:
+        X = np.fromstring(file.read(int(95e6)), dtype=np.uint8)
+        trX, vaX = np.split(X, [int(90e6)])
+        data_train, data_val = torch.from_numpy(trX), torch.from_numpy(vaX)
 
-    def __getitem__(self, index):
-        rand_start = torch.randint(0, self.data.size(0) - self.seq_len - 1, (1,))
-        full_seq = self.data[rand_start: rand_start + self.seq_len + 1].long()
-        return full_seq.cuda()
+    class TextSamplerDataset(Dataset):
+        def __init__(self, data, seq_len):
+            super().__init__()
+            self.data = data
+            self.seq_len = seq_len
 
-    def __len__(self):
-        return self.data.size(0) // self.seq_len
+        def __getitem__(self, index):
+            rand_start = torch.randint(0, self.data.size(0) - self.seq_len - 1, (1,))
+            full_seq = self.data[rand_start: rand_start + self.seq_len + 1].long()
+            return full_seq.cuda()
 
-train_dataset = TextSamplerDataset(data_train, SEQ_LEN)
-val_dataset   = TextSamplerDataset(data_val, SEQ_LEN)
-train_loader  = cycle(DataLoader(train_dataset, batch_size = BATCH_SIZE))
-val_loader    = cycle(DataLoader(val_dataset, batch_size = BATCH_SIZE))
+        def __len__(self):
+            return self.data.size(0) // self.seq_len
 
-# optimizer
+    train_dataset = TextSamplerDataset(data_train, SEQ_LEN)
+    val_dataset   = TextSamplerDataset(data_val, SEQ_LEN)
+    train_loader  = cycle(DataLoader(train_dataset, batch_size = BATCH_SIZE))
+    val_loader    = cycle(DataLoader(val_dataset, batch_size = BATCH_SIZE))
 
-optim = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    # optimizer
 
-# training
+    optim = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
-    model.train()
+    # training
 
-    for __ in range(GRADIENT_ACCUMULATE_EVERY):
-        loss = model(next(train_loader))
-        loss.backward()
+    for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
+        model.train()
 
-    print(f'training loss: {loss.item()}')
-    torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-    optim.step()
-    optim.zero_grad()
+        for __ in range(GRADIENT_ACCUMULATE_EVERY):
+            loss = model(next(train_loader))
+            loss.backward()
 
-    if i % VALIDATE_EVERY == 0:
-        model.eval()
-        with torch.no_grad():
-            loss = model(next(val_loader))
-            print(f'validation loss: {loss.item()}')
+        print(f'training loss: {loss.item()}')
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+        optim.step()
+        optim.zero_grad()
 
-    if i % GENERATE_EVERY == 0:
-        model.eval()
-        inp = random.choice(val_dataset)[:-1]
-        prime = decode_tokens(inp)
-        print(f'%s \n\n %s', (prime, '*' * 100))
+        if i % VALIDATE_EVERY == 0:
+            model.eval()
+            with torch.no_grad():
+                loss = model(next(val_loader))
+                print(f'validation loss: {loss.item()}')
 
-        sample = model.generate(inp, GENERATE_LENGTH)
-        output_str = decode_tokens(sample)
-        print(output_str)
+        if i % GENERATE_EVERY == 0:
+            model.eval()
+            inp = random.choice(val_dataset)[:-1]
+            prime = decode_tokens(inp)
+            print(f'%s \n\n %s', (prime, '*' * 100))
+
+            sample = model.generate(inp, GENERATE_LENGTH)
+            output_str = decode_tokens(sample)
+            print(output_str)
+
+if __name__ == '__main__':
+    main()
