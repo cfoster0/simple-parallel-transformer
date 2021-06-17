@@ -78,12 +78,12 @@ class Block(nn.Module):
         self.head_dim = config.head_dim
         self.hidden_dim = self.heads * self.head_dim
         self.expansion_factor = config.expansion_factor
-        self.qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
-        self.vp_dim = self.hidden_dim * (1 + self.expansion_factor)
+        self.qkvff_dim = self.hidden_dim * (3 + self.expansion_factor)
+        self.vff_dim = self.hidden_dim * (1 + self.expansion_factor)
 
         self.ln = nn.LayerNorm(self.hidden_dim)
-        self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
-        self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, False)
+        self.in_proj = nn.Linear(self.hidden_dim, self.qkvff_dim, False)
+        self.out_proj = nn.Linear(self.vff_dim, self.hidden_dim, False)
         self.rotary = RotaryEmbedding(config)
 
     def forward(self, x):
@@ -91,7 +91,7 @@ class Block(nn.Module):
 
         x = self.ln(x)
         x = self.in_proj(x)
-        q, k, v, p = torch.split(x, [
+        q, k, v, ff = torch.split(x, [
                                    self.hidden_dim,
                                    self.hidden_dim,
                                    self.hidden_dim,
@@ -106,8 +106,8 @@ class Block(nn.Module):
         a = F.softmax(a, dim=-1)
         o = einsum("bhij,bjhd -> bihd", a, v)
         o = rearrange(o, "b i h d -> b i (h d)")
-        p = F.gelu(p)
-        x = torch.cat([o, p], dim=-1)
+        ff = F.gelu(ff)
+        x = torch.cat([o, ff], dim=-1)
         x = self.out_proj(x)
         return x
 
