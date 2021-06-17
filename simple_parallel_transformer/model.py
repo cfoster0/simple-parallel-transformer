@@ -57,9 +57,8 @@ class RotaryEmbedding(nn.Module):
         x1, x2 = x.unbind(dim = -2)
         return torch.cat((-x2, x1), dim = -1)
 
-    def forward(self, x, start, end):
-        freqs = self.freqs[:, start:end]
-        return (x * freqs.cos()) + (self.rotate_half(x) * freqs.sin())
+    def forward(self, x):
+        return (x * self.freqs.cos()) + (self.rotate_half(x) * self.freqs.sin())
 
 class Block(nn.Module):
     def __init__(self, config: Config):
@@ -77,37 +76,42 @@ class Block(nn.Module):
         self.heads = config.heads
         self.head_dim = config.head_dim
         self.hidden_dim = self.heads * self.head_dim
+        self.max_seq_len = config.max_seq_len
         self.expansion_factor = config.expansion_factor
-        self.qkvff_dim = self.hidden_dim * (3 + self.expansion_factor)
-        self.vff_dim = self.hidden_dim * (1 + self.expansion_factor)
+        self.qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
+        self.vp_dim = self.hidden_dim * (1 + self.expansion_factor)
 
         self.ln = nn.LayerNorm(self.hidden_dim)
-        self.in_proj = nn.Linear(self.hidden_dim, self.qkvff_dim, bias=False)
-        self.out_proj = nn.Linear(self.vff_dim, self.hidden_dim, bias=True)
+        self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
+        nn.init.orthogonal_(self.in_proj.weight, gain=(self.qkvp_dim/self.hidden_dim))
+        self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
+        nn.init.orthogonal_(self.out_proj.weight, gain=(self.hidden_dim/self.vp_dim))
         self.rotary = RotaryEmbedding(config)
+
+        causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
+        causal_bias = -1e10 * (1. - causal_mask)
+        self.register_buffer('causal_bias', rearrange(causal_bias, "i j -> () () i j"))
 
     def forward(self, x):
         b, l, d = x.shape
 
         x = self.ln(x)
         x = self.in_proj(x)
-        q, k, v, ff = torch.split(x, [
+        q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
                                    self.hidden_dim,
                                    self.hidden_dim,
                                    self.hidden_dim * self.expansion_factor
                                    ], -1)
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b i h d", h=self.heads), (q, k, v))
-        (q, k) = map(lambda x: self.rotary(x, 0, l), (q, k))
-        a = einsum("bihd,bjhd -> bhij", q, k) * (self.head_dim ** -0.5)
-        causal_mask = torch.tril(torch.ones((l, l), device=a.device))
-        causal_bias = -1e10 * (1. - causal_mask)
-        a += rearrange(causal_bias, "i j -> () () i j")
+        (q, k) = map(lambda x: self.rotary(x), (q, k))
+        a = einsum("b i h d, b j h d -> b h i j", q, k) * (self.head_dim ** -0.5)
+        a += self.causal_bias
         a = F.softmax(a, dim=-1)
-        o = einsum("bhij,bjhd -> bihd", a, v)
+        o = einsum("b h i j, b j h d -> b i h d", a, v)
         o = rearrange(o, "b i h d -> b i (h d)")
-        ff = F.gelu(ff)
-        x = torch.cat([o, ff], dim=-1)
+        p = F.gelu(p)
+        x = torch.cat([o, p], dim=-1)
         x = self.out_proj(x)
         return x
 
