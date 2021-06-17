@@ -1,5 +1,5 @@
 # This code was adapted from lucidrains existing `x-transformers` repository.
-from simple_parallel_transformer import Transformer
+from simple_parallel_transformer import Transformer, Config
 from simple_parallel_transformer.autoregressive_wrapper import AutoregressiveWrapper
 
 import random
@@ -12,7 +12,9 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
 import hydra
-from hydra.utils import get_original_cwd, to_absolute_path
+from hydra.utils import get_original_cwd
+
+import wandb
 
 # constants
 
@@ -22,8 +24,7 @@ GRADIENT_ACCUMULATE_EVERY = 4
 LEARNING_RATE = 1e-4
 VALIDATE_EVERY  = 100
 GENERATE_EVERY  = 500
-GENERATE_LENGTH = 1024
-SEQ_LEN = 1024
+GENERATE_LENGTH = 512
 
 # helpers
 
@@ -41,6 +42,8 @@ def decode_tokens(tokens):
 
 @hydra.main(config_path=None, config_name="config")
 def train(cfg: Config) -> None:
+    wandb.init(project="simple-parallel-transformer", config=cfg)
+
     # instantiate GPT-like decoder model
 
     model = Transformer(
@@ -71,8 +74,8 @@ def train(cfg: Config) -> None:
         def __len__(self):
             return self.data.size(0) // self.seq_len
 
-    train_dataset = TextSamplerDataset(data_train, SEQ_LEN)
-    val_dataset   = TextSamplerDataset(data_val, SEQ_LEN)
+    train_dataset = TextSamplerDataset(data_train, cfg.max_seq_len)
+    val_dataset   = TextSamplerDataset(data_val, cfg.max_seq_len)
     train_loader  = cycle(DataLoader(train_dataset, batch_size = BATCH_SIZE))
     val_loader    = cycle(DataLoader(val_dataset, batch_size = BATCH_SIZE))
 
@@ -94,6 +97,17 @@ def train(cfg: Config) -> None:
         optim.step()
         optim.zero_grad()
 
+        logs = {}
+        
+        logs = {
+          **logs,
+          'iter': i,
+          'train_loss': loss.item(),
+        }
+        
+        wandb.log(logs)
+
+
         if i % VALIDATE_EVERY == 0:
             model.eval()
             with torch.no_grad():
@@ -109,6 +123,8 @@ def train(cfg: Config) -> None:
             sample = model.generate(inp, GENERATE_LENGTH)
             output_str = decode_tokens(sample)
             print(output_str)
+      
+    wandb.finish()
 
 if __name__ == '__main__':
-    main()
+    train()
