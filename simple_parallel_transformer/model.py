@@ -81,13 +81,13 @@ class Block(nn.Module):
         self.qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
         self.vp_dim = self.hidden_dim * (1 + self.expansion_factor)
 
-        init_scale = 2.0 / config.depth / (self.hidden_dim ** 0.5)
+        init_scale = (2.0 / config.depth) ** 0.5
 
         self.ln = nn.LayerNorm(self.hidden_dim)
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
-        nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
+        nn.init.orthogonal_(self.in_proj.weight, gain=init_scale*(self.qkvp_dim/self.hidden_dim))
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
-        nn.init.orthogonal_(self.out_proj.weight, gain=init_scale)
+        nn.init.orthogonal_(self.out_proj.weight, gain=init_scale*(self.hidden_dim/self.vp_dim))
         self.rotary = RotaryEmbedding(config)
 
         causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
