@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, Dataset
 import hydra
 from hydra.utils import get_original_cwd
 
+import time
 import wandb
 
 # constants
@@ -86,26 +87,19 @@ def train(cfg: Config) -> None:
     # training
 
     for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
+        start_time = time.time()
         model.train()
 
         for __ in range(GRADIENT_ACCUMULATE_EVERY):
             loss = model(next(train_loader))
             loss.backward()
 
+        end_time = time.time()
         print(f'training loss: {loss.item()}')
+        train_loss = loss.item()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
         optim.step()
         optim.zero_grad()
-
-        logs = {}
-        
-        logs = {
-          **logs,
-          'iter': i,
-          'train_loss': loss.item(),
-        }
-        
-        wandb.log(logs)
 
 
         if i % VALIDATE_EVERY == 0:
@@ -113,6 +107,7 @@ def train(cfg: Config) -> None:
             with torch.no_grad():
                 loss = model(next(val_loader))
                 print(f'validation loss: {loss.item()}')
+                val_loss = loss.item()
 
         if i % GENERATE_EVERY == 0:
             model.eval()
@@ -123,6 +118,18 @@ def train(cfg: Config) -> None:
             sample = model.generate(inp, GENERATE_LENGTH)
             output_str = decode_tokens(sample)
             print(output_str)
+        
+        logs = {}
+        
+        logs = {
+          **logs,
+          'iter': i,
+          'step_time': end_time - start_time,
+          'train_loss': train_loss,
+          'val_loss': val_loss,
+        }
+        
+        wandb.log(logs)
       
     wandb.finish()
 

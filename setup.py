@@ -18,6 +18,7 @@ setup(
     'torch>=1.6',
     'einops>=0.3',
     'hydra-core',
+    'wandb',
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
