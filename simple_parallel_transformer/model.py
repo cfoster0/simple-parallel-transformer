@@ -61,7 +61,7 @@ class RotaryEmbedding(nn.Module):
         return (x * self.freqs.cos()) + (self.rotate_half(x) * self.freqs.sin())
 
 class Block(nn.Module):
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, layer_depth: int):
         """
         In this module is the code for a transformer block. This builds on
         Ben Wang's ideas of (1) doing the attention and feedforward residual
@@ -81,7 +81,7 @@ class Block(nn.Module):
         self.qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
         self.vp_dim = self.hidden_dim * (1 + self.expansion_factor)
 
-        init_scale = (2.0 / config.depth) ** -0.5
+        init_scale = 2.0 / (layer_depth ** 0.5)
 
         self.ln = nn.LayerNorm(self.hidden_dim)
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
@@ -132,7 +132,7 @@ class Transformer(nn.Module):
         prelude = nn.Sequential(*[
                                   nn.Embedding(config.vocab_size, hidden_dim),
                                   ])
-        body = nn.Sequential(*[Residual(Block(config)) for _ in range(config.depth)])
+        body = nn.Sequential(*[Residual(Block(config, layer_depth)) for layer_depth in range(config.depth)])
         postlude = nn.Sequential(*[
                                   nn.LayerNorm((hidden_dim)),
                                   nn.Linear(hidden_dim, config.vocab_size, bias=True),
