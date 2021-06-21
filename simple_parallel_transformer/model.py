@@ -48,7 +48,7 @@ class RotaryEmbedding(nn.Module):
         dim = config.head_dim
         inv_freq = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
         t = torch.arange(config.max_seq_len).type_as(inv_freq)
-        freqs = torch.einsum('i , j -> i j', t, inv_freq)
+        freqs = einsum('i , j -> i j', t, inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
         self.register_buffer('freqs', rearrange(emb, 'n d -> () n () d'))
 
@@ -81,13 +81,13 @@ class Block(nn.Module):
         self.qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
         self.vp_dim = self.hidden_dim * (1 + self.expansion_factor)
 
-        init_scale = (2.0 / config.depth) ** 0.5
+        init_scale = (2.0 / config.depth) ** -0.5
 
         self.ln = nn.LayerNorm(self.hidden_dim)
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
-        nn.init.orthogonal_(self.in_proj.weight, gain=init_scale*(self.qkvp_dim/self.hidden_dim))
+        nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
-        nn.init.orthogonal_(self.out_proj.weight, gain=init_scale*(self.hidden_dim/self.vp_dim))
+        nn.init.orthogonal_(self.out_proj.weight, gain=init_scale)
         self.rotary = RotaryEmbedding(config)
 
         causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
