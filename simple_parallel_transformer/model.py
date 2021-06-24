@@ -81,7 +81,7 @@ class Block(nn.Module):
         self.qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
         self.vp_dim = self.hidden_dim * (1 + self.expansion_factor)
 
-        init_scale = 2.0 / (layer_depth ** 0.5)
+        init_scale = 2.0 / (config.depth ** 0.5)
 
         self.ln = nn.LayerNorm(self.hidden_dim)
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
