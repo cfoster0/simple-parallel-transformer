@@ -23,6 +23,33 @@ cs = ConfigStore.instance()
 cs.store(name="config", node=Config)
 
 
+class TokenShiftMean(nn.Module):
+    def __init__(self, dim, delays, window_sizes):
+        super(TokenShiftMean, self).__init__()
+        assert dim % (len(delays) + 1) == 0, "Number of shift delays + 1 must evenly divide dimension"
+        assert dim % (len(window_sizes) + 1) == 0, "Number of shift window sizes + 1 must evenly divide dimension"
+        assert len(delays) == len(window_sizes), "Number of shifts and delays must be the same"
+        self.dim = dim
+        self.groups = len(delays)
+        self.groupsize = dim // self.groups
+        self.delays = [0] + delays
+        self.window_sizes = [1] + window_sizes
+
+    def forward(self, x):
+        out = x
+        cumulative = torch.cumsum(x, dim=1)
+        for i, (delay, window_size) in enumerate(zip(self.delays, self.window_sizes)):
+          if i == 0: # Premature optimization
+            continue
+          start_dim = self.groupsize * i
+          end_dim = start_dim + self.groupsize
+          out[:, :, start_dim:end_dim] = F.pad(
+            cumulative[:, :, start_dim:end_dim] - F.pad(
+              cumulative[:, :-window_size, start_dim:end_dim], 
+              (0, 0, window_size, 0)), 
+            (0, 0, delay, 0))[:, :-delay,:] / window_size
+        return out
+
 class Residual(nn.Module):
     def __init__(self, residual):
         """
@@ -84,6 +111,7 @@ class Block(nn.Module):
         init_scale = 2.0 / (config.depth ** 0.5)
 
         self.ln = nn.LayerNorm(self.hidden_dim)
+        self.token_shift = TokenShiftMean(self.hidden_dim, [1, 2, 4], [1, 2, 4])
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
         nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
@@ -99,6 +127,7 @@ class Block(nn.Module):
 
         x = self.ln(x)
         x = self.in_proj(x)
+        x = self.token_shift(x)
         q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
                                    self.hidden_dim,
