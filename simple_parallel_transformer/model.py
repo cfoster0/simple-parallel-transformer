@@ -126,8 +126,8 @@ class Block(nn.Module):
         b, l, d = x.shape
 
         x = self.ln(x)
-        x = self.in_proj(x)
         x = self.token_shift(x)
+        x = self.in_proj(x)
         q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
                                    self.hidden_dim,
