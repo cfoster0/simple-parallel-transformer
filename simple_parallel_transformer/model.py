@@ -22,7 +22,16 @@ cs = ConfigStore.instance()
 # Registering the Config class with the name 'config'.
 cs.store(name="config", node=Config)
 
+class SoftPrefixMax(nn.Module):
+    def __init__(self, dimensions):
+        super(SoftPrefixMax, self).__init__()
+        self.dimensions = dimensions
 
+    def forward(self, x):
+        part = x[..., :self.dimensions]
+        x[..., :self.dimensions] = torch.logcumsumexp(part * 5.0, dim=1) / 5.0
+        return x
+    
 class Residual(nn.Module):
     def __init__(self, residual):
         """
@@ -84,6 +93,7 @@ class Block(nn.Module):
         init_scale = 2.0 / (config.depth ** 0.5)
 
         self.ln = nn.LayerNorm(self.hidden_dim)
+        self.accumulator = SoftPrefixMax(self.hidden_dim // 8)
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
         nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
@@ -98,6 +108,7 @@ class Block(nn.Module):
         b, l, d = x.shape
 
         x = self.ln(x)
+        x = self.accumulator(x)
         x = self.in_proj(x)
         q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
