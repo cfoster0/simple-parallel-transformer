@@ -27,19 +27,19 @@ class SplitParallel(nn.Module):
         super(SplitParallel, self).__init__()
         assert len(ratios) == len(modules), f"Number of ratios {len(ratios)} must be equal to number of modules {len(modules)}"
         self.ratios = ratios
-        self.modules = nn.ModuleList(modules)
+        self.submodules = nn.ModuleList(modules)
         if dim != -1:
             raise NotImplementedError("Only splitting last dimension is currently supported")
         self.dim = dim
     
     def forward(self, x):
-        d = x.shape(self.dim)
+        d = x.size(self.dim)
         assert d % sum(self.ratios) == 0, f"Total {sum(self.ratios)} of ratios {self.ratios} must evenly divide dimension = {d}"
         stride = d // sum(self.ratios)
         
         out = x
         cursor = 0
-        for (ratio, module) in zip(self.ratios, self.modules):
+        for (ratio, module) in zip(self.ratios, self.submodules):
             span = ratio * stride
             if self.dim == -1:
                 out[..., cursor:cursor+span] = module(x[..., cursor:cursor+span])
@@ -130,14 +130,16 @@ class Block(nn.Module):
         init_scale = 2.0 / (config.depth ** 0.5)
 
         self.ln = nn.LayerNorm(self.hidden_dim)
-        identity = nn.Identity()
-        accumulator = SoftPrefixMax(self.hidden_dim // 8)
-        shift = Shift(self.hidden_dim // 2, 1)
-        self.time_pool = SplitParallel([3, 1, 4], [identity, accumulator, shift])
+        self.time_pool = SplitParallel([5, 1, 1, 1], [
+            nn.Identity,
+            SoftPrefixMax(self.hidden_dim // 8),
+            Shift(self.hidden_dim // 8, 1),
+            Shift(self.hidden_dim // 8, 2),
+        ])
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
         nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
-        nn.init.orthogonal_(self.out_proj.weight, gain=init_scale)
+        nn.init.zeros_(self.out_proj.weight)
         self.rotary = RotaryEmbedding(config)
 
         causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
