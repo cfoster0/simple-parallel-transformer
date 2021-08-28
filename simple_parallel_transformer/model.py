@@ -26,10 +26,21 @@ class SoftPrefixMax(nn.Module):
     def __init__(self, dimensions):
         super(SoftPrefixMax, self).__init__()
         self.dimensions = dimensions
-
+    
     def forward(self, x):
         part = x[..., :self.dimensions]
         x[..., :self.dimensions] = torch.logcumsumexp(part * 5.0, dim=1) / 5.0
+        return x
+      
+class Shift(nn.Module):
+    def __init__(self, dimensions, n):
+        super(Shift, self).__init__()
+        self.dimensions = dimensions
+        self.n = n
+
+    def forward(self, x):
+        part = x[..., :self.dimensions]
+        x[..., :self.dimensions] = F.pad(part, (0, 0, self.n, -self.n), value=0)
         return x
     
 class Residual(nn.Module):
@@ -94,6 +105,7 @@ class Block(nn.Module):
 
         self.ln = nn.LayerNorm(self.hidden_dim)
         self.accumulator = SoftPrefixMax(self.hidden_dim // 8)
+        self.shift = Shift(self.hidden_dim // 2, 1)
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
         nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
@@ -109,6 +121,7 @@ class Block(nn.Module):
 
         x = self.ln(x)
         x = self.accumulator(x)
+        x = self.shift(x)
         x = self.in_proj(x)
         q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
