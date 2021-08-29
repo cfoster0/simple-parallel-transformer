@@ -131,7 +131,7 @@ class Block(nn.Module):
 
         self.ln = nn.LayerNorm(self.hidden_dim)
         self.time_pool = SplitParallel([5, 1, 1, 1], [
-            nn.Identity,
+            nn.Identity(),
             SoftPrefixMax(self.hidden_dim // 8),
             Shift(self.hidden_dim // 8, 1),
             Shift(self.hidden_dim // 8, 2),
