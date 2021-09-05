@@ -22,6 +22,45 @@ cs = ConfigStore.instance()
 # Registering the Config class with the name 'config'.
 cs.store(name="config", node=Config)
 
+def exists(val):
+    return val is not None
+
+class AlibiPositionalBias(nn.Module):
+    def __init__(self, heads):
+        super().__init__()
+        self.heads = heads
+        slopes = torch.Tensor(self._get_slopes(heads))
+        slopes = rearrange(slopes, 'h -> () h () ()')
+        self.register_buffer('slopes', slopes, persistent = False)
+        self.register_buffer('bias', None, persistent = False)
+
+    @staticmethod
+    def _get_slopes(heads):
+        import math
+        def get_slopes_power_of_2(n):
+            start = (2**(-2**-(math.log2(n)-3)))
+            ratio = start
+            return [start*ratio**i for i in range(n)]
+
+        if math.log2(heads).is_integer():
+            return get_slopes_power_of_2(heads)
+
+        closest_power_of_2 = 2 ** math.floor(math.log2(heads))
+        return get_slopes_power_of_2(closest_power_of_2) + get_slopes_power_of_2(2 * closest_power_of_2)[0::2][:heads-closest_power_of_2]
+
+    def forward(self, qk_dots):
+        h, i, j, device = *qk_dots.shape[-3:], qk_dots.device
+
+        if exists(self.bias) and self.bias.shape[-1] >= j:
+            return qk_dots + self.bias[..., :j]
+
+        bias = torch.arange(j, device = device)
+        bias = rearrange(bias, 'j -> () () () j')
+        bias = bias * self.slopes
+        bias = F.pad(bias, (0, 0, 0, 0, 0, h - bias.shape[1]))
+        self.register_buffer('bias', bias, persistent = False)
+        return qk_dots + self.bias
+
 class SplitParallel(nn.Module):
     def __init__(self, ratios, modules, dim=-1):
         super(SplitParallel, self).__init__()
@@ -81,31 +120,6 @@ class Residual(nn.Module):
     def forward(self, x):
         return x + self.residual(x)
 
-class RotaryEmbedding(nn.Module):
-    def __init__(self, config):
-        """
-        In the constructor we generate rotary positional embeddings. When called
-        in forward(), we assume that the start and end positions are within the
-        bounds of 0 and max_seq_len. For an intuitive look into rotary 
-        positional embeddings, see the below link:
-        https://blog.eleuther.ai/rotary-embeddings/
-        """
-        super().__init__()
-        dim = config.head_dim
-        inv_freq = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-        t = torch.arange(config.max_seq_len).type_as(inv_freq)
-        freqs = einsum('i , j -> i j', t, inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer('freqs', rearrange(emb, 'n d -> () n () d'))
-
-    def rotate_half(self, x):
-        x = rearrange(x, '... (j d) -> ... j d', j = 2)
-        x1, x2 = x.unbind(dim = -2)
-        return torch.cat((-x2, x1), dim = -1)
-
-    def forward(self, x):
-        return (x * self.freqs.cos()) + (self.rotate_half(x) * self.freqs.sin())
-
 class Block(nn.Module):
     def __init__(self, config: Config, layer_depth: int):
         """
@@ -140,7 +154,7 @@ class Block(nn.Module):
         nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
         nn.init.zeros_(self.out_proj.weight)
-        self.rotary = RotaryEmbedding(config)
+        self.alibi = AlibiPositionalBias(self.heads)
 
         causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
         causal_bias = -1e10 * (1. - causal_mask)
@@ -159,9 +173,8 @@ class Block(nn.Module):
                                    self.hidden_dim * self.expansion_factor
                                    ], -1)
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b i h d", h=self.heads), (q, k, v))
-        (q, k) = map(lambda x: self.rotary(x), (q, k))
         a = einsum("b i h d, b j h d -> b h i j", q, k) * (self.head_dim ** -0.5)
-        a += self.causal_bias
+        a = self.causal_bias + self.alibi(a)
         a = F.softmax(a, dim=-1)
         o = einsum("b h i j, b j h d -> b i h d", a, v)
         o = rearrange(o, "b i h d -> b i (h d)")
