@@ -16,6 +16,8 @@ from hydra.utils import get_original_cwd
 
 import time
 import wandb
+from scipy import signal
+from scipy.signal import convolve as sig_convolve
 
 # constants
 
@@ -44,6 +46,11 @@ def decode_tokens(tokens):
 @hydra.main(config_path=None, config_name="config")
 def train(cfg: Config) -> None:
     wandb.init(project="simple-parallel-transformer", config=cfg)
+
+    # Create a FIR filter.
+    filter_taps = 3
+    filter_cutoff = 0.1
+    filter_coefficients = signal.firwin(filter_taps, filter_cutoff)
 
     # instantiate GPT-like decoder model
 
@@ -86,6 +93,9 @@ def train(cfg: Config) -> None:
 
     # training
 
+    train_losses = []
+    val_losses = []
+
     for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
         start_time = time.time()
         model.train()
@@ -97,6 +107,7 @@ def train(cfg: Config) -> None:
         end_time = time.time()
         print(f'training loss: {loss.item()}')
         train_loss = loss.item()
+        train_losses += [train_loss]
         torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
         optim.step()
         optim.zero_grad()
@@ -108,6 +119,7 @@ def train(cfg: Config) -> None:
                 loss = model(next(val_loader))
                 print(f'validation loss: {loss.item()}')
                 val_loss = loss.item()
+                val_losses += [val_loss]
 
         if i % GENERATE_EVERY == 0:
             model.eval()
@@ -118,6 +130,9 @@ def train(cfg: Config) -> None:
             sample = model.generate(inp, GENERATE_LENGTH)
             output_str = decode_tokens(sample)
             print(output_str)
+
+        train_loss_smooth = sig_convolve(np.asarray(train_losses), filter_coefficients, mode='valid')[-1]
+        val_loss_smooth = sig_convolve(np.asarray(val_losses), filter_coefficients, mode='valid')[-1]
         
         logs = {}
         
@@ -127,6 +142,8 @@ def train(cfg: Config) -> None:
           'step_time': end_time - start_time,
           'train_loss': train_loss,
           'val_loss': val_loss,
+          'train_loss_smooth': train_loss_smooth,
+          'val_loss_smooth': val_loss_smooth,
         }
         
         wandb.log(logs)
