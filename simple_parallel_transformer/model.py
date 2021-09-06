@@ -144,11 +144,12 @@ class Block(nn.Module):
         init_scale = 2.0 / (config.depth ** 0.5)
 
         self.ln = nn.LayerNorm(self.hidden_dim)
-        self.time_pool = SplitParallel([5, 1, 1, 1], [
+        self.time_pool = SplitParallel([4, 1, 1, 1, 1], [
             nn.Identity(),
             SoftPrefixMax(self.hidden_dim // 8),
             Shift(self.hidden_dim // 8, 1),
             Shift(self.hidden_dim // 8, 2),
+            Shift(self.hidden_dim // 8, 3),
         ])
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
         nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
