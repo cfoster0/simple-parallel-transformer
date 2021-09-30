@@ -51,17 +51,6 @@ def set_seed(seed):
 def train(cfg: Config) -> None:
     set_seed(cfg.seed)
 
-    # instantiate GPT-like decoder model
-
-    model = Transformer(
-        cfg
-    )
-
-    model = AutoregressiveWrapper(model)
-    model.cuda()
-
-    wandb.init(project="reproducible-parallel-transformer", config=cfg)
-
     # prepare enwik8 data
 
     with gzip.open(get_original_cwd() + '/./data/enwik8.gz') as file:
@@ -87,6 +76,19 @@ def train(cfg: Config) -> None:
     val_dataset   = TextSamplerDataset(data_val, cfg.max_seq_len)
     train_loader  = cycle(DataLoader(train_dataset, batch_size = BATCH_SIZE))
     val_loader    = cycle(DataLoader(val_dataset, batch_size = BATCH_SIZE))
+
+    # instantiate GPT-like decoder model
+
+    model = Transformer(
+        cfg
+    )
+
+    model = AutoregressiveWrapper(model)
+    model.cuda()
+    pytorch_total_params = sum(p.numel() for p in model.parameters())
+    print(f"TOTAL PARAMETERS: {pytorch_total_params}")
+
+    wandb.init(project="reproducible-parallel-transformer", config=cfg)
 
     # optimizer
 
