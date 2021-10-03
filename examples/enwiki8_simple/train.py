@@ -88,7 +88,7 @@ def train(cfg: Config) -> None:
     pytorch_total_params = sum(p.numel() for p in model.parameters())
     print(f"TOTAL PARAMETERS: {pytorch_total_params}")
 
-    wandb.init(project="reproducible-parallel-transformer", config=cfg)
+    wandb.init(project="transformer-enwiki8-arena", config=cfg)
 
     # optimizer
 
@@ -98,6 +98,8 @@ def train(cfg: Config) -> None:
 
     train_losses = []
     val_losses = []
+    
+    set_seed(cfg.seed)
 
     for i in tqdm.tqdm(range(NUM_BATCHES), mininterval=10., desc='training'):
         start_time = time.time()
