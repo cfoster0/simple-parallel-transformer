@@ -118,11 +118,8 @@ class Residual(nn.Module):
         super(Residual, self).__init__()
         self.residual = residual
 
-    def forward(self, pair):
-        state, logits = pair
-        state_residual, logits_residual = self.residual(state)
-
-        return (state + state_residual, logits + logits_residual)
+    def forward(self, x):
+        return x + self.residual(x)
 
 class Block(nn.Module):
     def __init__(self, config: Config, layer_depth: int):
@@ -163,8 +160,7 @@ class Block(nn.Module):
         causal_bias = -1e10 * (1. - causal_mask)
         self.register_buffer('causal_bias', rearrange(causal_bias, "i j -> () () i j"))
 
-    def forward(self, state):
-        x = state
+    def forward(self, x):
         b, l, d = x.shape
 
         x = self.ln(x)
@@ -184,9 +180,8 @@ class Block(nn.Module):
         o = rearrange(o, "b i h d -> b i (h d)")
         p = F.gelu(p)
         x = torch.cat([o, p], dim=-1)
-        logits_residual = x[...,:-self.hidden_dim:self.expansion_factor]
         x = self.out_proj(x)
-        return x, logits_residual
+        return x
 
 class Transformer(nn.Module):
     def __init__(self, config: Config):
@@ -209,12 +204,13 @@ class Transformer(nn.Module):
                                   nn.Linear(hidden_dim, config.vocab_size, bias=True),
                                   ])
 
-        self.prelude = prelude
-        self.body = body
-        self.postlude = postlude
+        network = nn.Sequential(*[
+                                  prelude, 
+                                  body, 
+                                  postlude,
+                                  ])
+
+        self.network = network
 
     def forward(self, x):
-        x = self.prelude(x)
-        (state, logits) = self.body((x, torch.zeros_like(x)))
-        x = self.postlude(logits)
-        return x
+        return self.network(x)
