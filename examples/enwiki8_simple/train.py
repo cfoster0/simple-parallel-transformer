@@ -42,6 +42,16 @@ def decode_token(token):
 def decode_tokens(tokens):
     return ''.join(list(map(decode_token, tokens)))
 
+def to_dict(obj):
+    d = {}
+    for key in obj.keys():
+        value = obj[key]
+        if hasattr(value, 'keys'):
+            d[key] = to_dict(value)
+        else:
+            d[key] = value
+    return d
+
 def set_seed(seed):
     torch.manual_seed(seed)
     random.seed(seed)
@@ -87,8 +97,11 @@ def train(cfg: Config) -> None:
     model.cuda()
     pytorch_total_params = sum(p.numel() for p in model.parameters())
     print(f"TOTAL PARAMETERS: {pytorch_total_params}")
+    
+    config = to_dict(cfg)
+    config['parameters'] = pytorch_total_params
 
-    wandb.init(project="transformer-enwiki8-arena", config=cfg)
+    wandb.init(project="transformer-enwiki8-arena", config=config)
 
     # optimizer
 
