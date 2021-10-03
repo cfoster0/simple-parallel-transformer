@@ -8,6 +8,8 @@ from einops import rearrange
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
 
+from .extra_modules import *
+
 @dataclass
 class Config:
     """Class for keeping track of config variables."""
@@ -87,16 +89,6 @@ class SplitParallel(nn.Module):
                 raise NotImplementedError("Only splitting last dimension is currently supported")
             cursor += span
         return out
-
-class SoftPrefixMax(nn.Module):
-    def __init__(self, dimensions):
-        super(SoftPrefixMax, self).__init__()
-        self.dimensions = dimensions
-    
-    def forward(self, x):
-        part = x[..., :self.dimensions]
-        x[..., :self.dimensions] = torch.logcumsumexp(part * 5.0, dim=1) / 5.0
-        return x
       
 class Shift(nn.Module):
     def __init__(self, dimensions, n):
