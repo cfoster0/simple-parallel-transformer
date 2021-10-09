@@ -107,7 +107,7 @@ class LogNormAct(nn.Module):
     
     def forward(self, x, dim=-1):
         shape = (x.shape[dim],)
-        return F.gelu(F.layer_norm(torch.log1p(F.relu(x)), shape))
+        return F.layer_norm(torch.log1p(F.relu(x)), shape)
     
 class Residual(nn.Module):
     def __init__(self, residual):
@@ -167,6 +167,7 @@ class Block(nn.Module):
         x = self.ln(x)
         x = self.time_pool(x)
         x = self.in_proj(x)
+        x = self.log_norm(x)
         q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
                                    self.hidden_dim,
@@ -179,7 +180,7 @@ class Block(nn.Module):
         a = F.softmax(a, dim=-1)
         o = einsum("b h i j, b j h d -> b i h d", a, v)
         o = rearrange(o, "b i h d -> b i (h d)")
-        p = self.log_norm(p)
+        p = F.gelu(p)
         x = torch.cat([o, p], dim=-1)
         x = self.out_proj(x)
         return x
