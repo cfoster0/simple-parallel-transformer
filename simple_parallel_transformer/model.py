@@ -101,6 +101,14 @@ class Shift(nn.Module):
         x[..., :self.dimensions] = F.pad(part, (0, 0, self.n, -self.n), value=0)
         return x
     
+class LogNormAct(nn.Module):
+    def __init__(self):
+        super(LogNormAct, self).__init__()
+    
+    def forward(self, x, dim=-1):
+        shape = (x.shape[dim],)
+        return F.gelu(F.layer_norm(torch.log1p(F.relu(x)), shape))
+    
 class Residual(nn.Module):
     def __init__(self, residual):
         """
@@ -147,6 +155,7 @@ class Block(nn.Module):
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
         nn.init.zeros_(self.out_proj.weight)
         self.alibi = AlibiPositionalBias(self.heads)
+        self.log_norm = LogNormAct()
 
         causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
         causal_bias = -1e10 * (1. - causal_mask)
@@ -170,7 +179,7 @@ class Block(nn.Module):
         a = F.softmax(a, dim=-1)
         o = einsum("b h i j, b j h d -> b i h d", a, v)
         o = rearrange(o, "b i h d -> b i (h d)")
-        p = F.gelu(p)
+        p = self.log_norm(p)
         x = torch.cat([o, p], dim=-1)
         x = self.out_proj(x)
         return x
