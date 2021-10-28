@@ -28,6 +28,7 @@ LEARNING_RATE = 1e-4
 VALIDATE_EVERY  = 100
 GENERATE_EVERY  = 500
 GENERATE_LENGTH = 512
+DRY_RUN = False
 
 # helpers
 
@@ -75,8 +76,8 @@ def train(cfg: Config) -> None:
             self.seq_len = seq_len
 
         def __getitem__(self, index):
-            rand_start = torch.randint(0, self.data.size(0) - self.seq_len - 1, (1,))
-            full_seq = self.data[rand_start: rand_start + self.seq_len + 1].long()
+            rand_start = torch.randint(0, self.data.size(0) - self.seq_len, (1,))
+            full_seq = self.data[rand_start: rand_start + self.seq_len].long()
             return full_seq.cuda()
 
         def __len__(self):
@@ -101,7 +102,8 @@ def train(cfg: Config) -> None:
     config = to_dict(cfg)
     config['parameters'] = pytorch_total_params
 
-    wandb.init(project="transformer-enwiki8-arena", config=config)
+    if not DRY_RUN:
+        wandb.init(project="transformer-enwiki8-arena", config=config)
 
     # optimizer
 
@@ -145,7 +147,7 @@ def train(cfg: Config) -> None:
 
         if i % GENERATE_EVERY == 0:
             model.eval()
-            inp = random.choice(val_dataset)[:-1]
+            inp = random.choice(val_dataset)
             prime = decode_tokens(inp)
             print(f'%s \n\n %s', (prime, '*' * 100))
 
@@ -163,9 +165,11 @@ def train(cfg: Config) -> None:
           'val_loss': val_loss,
         }
         
-        wandb.log(logs)
+        if not DRY_RUN:
+            wandb.log(logs)
       
-    wandb.finish()
+    if not DRY_RUN:
+        wandb.finish()
 
 if __name__ == '__main__':
     train()
