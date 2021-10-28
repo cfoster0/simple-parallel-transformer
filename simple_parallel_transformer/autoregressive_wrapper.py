@@ -50,7 +50,7 @@ class AutoregressiveWrapper(nn.Module):
         b, t = start_tokens.shape
 
         self.net.eval()
-        out = start_tokens
+        out = F.pad(start_tokens, (1, 0), value=self.net.sos_index)
         mask = kwargs.pop('mask', None)
 
         if mask is None:
@@ -74,7 +74,7 @@ class AutoregressiveWrapper(nn.Module):
             if eos_token is not None and (sample == eos_token).all():
                 break
 
-        out = out[:, t:]
+        out = out[:, 1+t:] # Extra 1 is for SOS
 
         if num_dims == 1:
             out = out.squeeze(0)
@@ -83,16 +83,8 @@ class AutoregressiveWrapper(nn.Module):
         return out
 
     def forward(self, x, **kwargs):
-        xi = x[:, :-1]
-        xo = x[:, 1:]
-
-        # help auto-solve a frequent area of confusion around input masks in auto-regressive
-        # if user supplies a mask that is only off by one from the source sequence, resolve it for them
-        mask = kwargs.get('mask', None)
-        if mask is not None and mask.shape[1] == x.shape[1]:
-            mask = mask[:, :-1]
-            kwargs['mask'] = mask
-
+        xi = F.pad(x, (1, -1), value=self.net.sos_index)
+        xo = x
         out = self.net(xi, **kwargs)
         loss = F.cross_entropy(out.transpose(1, 2), xo, ignore_index = self.ignore_index)
         return loss
