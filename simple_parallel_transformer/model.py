@@ -196,23 +196,20 @@ class Transformer(nn.Module):
         super(Transformer, self).__init__()
         self.max_seq_len = config.max_seq_len
         hidden_dim = config.heads * config.head_dim
+        self.sos_index = config.vocab_size
         
-        prelude = nn.Sequential(*[
-                                  nn.Embedding(config.vocab_size, hidden_dim),
+        self.prelude = nn.Sequential(*[
+                                  nn.Embedding(config.vocab_size + 1, hidden_dim),
                                   ])
-        body = nn.Sequential(*[Residual(Block(config, layer_depth)) for layer_depth in range(config.depth)])
-        postlude = nn.Sequential(*[
+        self.body = nn.Sequential(*[Residual(Block(config, layer_depth)) for layer_depth in range(config.depth)])
+        self.postlude = nn.Sequential(*[
                                   nn.LayerNorm((hidden_dim)),
                                   nn.Linear(hidden_dim, config.vocab_size, bias=True),
                                   ])
 
-        network = nn.Sequential(*[
-                                  prelude, 
-                                  body, 
-                                  postlude,
-                                  ])
-
-        self.network = network
-
     def forward(self, x):
-        return self.network(x)
+        x = self.prelude(x)
+        for (i, layer) in enumerate(self.body):
+            x = layer(x)
+        x = self.postlude(x)
+        return x
