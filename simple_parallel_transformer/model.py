@@ -101,14 +101,6 @@ class Shift(nn.Module):
         x[..., :self.dimensions] = F.pad(part, (0, 0, self.n, -self.n), value=0)
         return x
     
-class LogNormAct(nn.Module):
-    def __init__(self):
-        super(LogNormAct, self).__init__()
-    
-    def forward(self, x, dim=-1):
-        shape = (x.shape[dim],)
-        return F.layer_norm(torch.log1p(F.relu(x)), shape)
-    
 class Residual(nn.Module):
     def __init__(self, residual):
         """
@@ -144,7 +136,9 @@ class Block(nn.Module):
 
         init_scale = 2.0 / (config.depth ** 0.5)
 
-        self.ln = nn.LayerNorm(self.hidden_dim)
+        self.in_ln = nn.LayerNorm(self.hidden_dim)
+        self.mid_ln = nn.LayerNorm(self.qkvp_dim)
+        self.out_ln = nn.LayerNorm(self.hidden_dim)
         self.time_pool = SplitParallel([4, 2, 2], [
             nn.Identity(),
             Shift(self.hidden_dim // 4, 1),
@@ -155,7 +149,6 @@ class Block(nn.Module):
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
         nn.init.zeros_(self.out_proj.weight)
         self.alibi = AlibiPositionalBias(self.heads)
-        self.log_norm = LogNormAct()
 
         causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
         causal_bias = -1e10 * (1. - causal_mask)
@@ -164,10 +157,10 @@ class Block(nn.Module):
     def forward(self, x):
         b, l, d = x.shape
 
-        x = self.ln(x)
+        x = self.in_ln(x)
         x = self.time_pool(x)
         x = self.in_proj(x)
-        x = self.log_norm(x)
+        x = self.mid_ln(F.relu(x))
         q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
                                    self.hidden_dim,
@@ -181,8 +174,14 @@ class Block(nn.Module):
         o = einsum("b h i j, b j h d -> b i h d", a, v)
         o = rearrange(o, "b i h d -> b i (h d)")
         p = F.gelu(p)
+        
+        p1 = p
+        p2 = torch.roll(p, 1, dims=-1)
+        p = einsum("b i d, b i d -> b i d", p1, p2)
+        
         x = torch.cat([o, p], dim=-1)
         x = self.out_proj(x)
+        x = self.out_ln(x)
         return x
 
 class Transformer(nn.Module):
