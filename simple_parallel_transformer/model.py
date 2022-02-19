@@ -160,7 +160,7 @@ class Block(nn.Module):
         x = self.in_ln(x)
         x = self.time_pool(x)
         x = self.in_proj(x)
-        x = self.mid_ln(x)
+        x = self.mid_ln(F.relu(x))
         q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
                                    self.hidden_dim,
@@ -173,6 +173,8 @@ class Block(nn.Module):
         a = F.softmax(a, dim=-1)
         o = einsum("b h i j, b j h d -> b i h d", a, v)
         o = rearrange(o, "b i h d -> b i (h d)")
+        
+        p = F.gelu(p)
         
         p1 = p
         p2 = torch.roll(p, 1, dims=-1)
