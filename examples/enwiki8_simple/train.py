@@ -113,6 +113,7 @@ def train(cfg: Config) -> None:
 
     train_losses = []
     val_losses = []
+    tokens = 0
     
     set_seed(cfg.seed)
 
@@ -127,6 +128,7 @@ def train(cfg: Config) -> None:
             with torch.no_grad():
               train_loss += loss.item()
             loss.backward()
+            tokens += cfg.max_seq_len * GRADIENT_ACCUMULATE_EVERY
         train_loss = train_loss / GRADIENT_ACCUMULATE_EVERY
 
         end_time = time.time()
@@ -160,6 +162,7 @@ def train(cfg: Config) -> None:
         logs = {
           **logs,
           'iter': i,
+          'tokens': tokens,
           'step_time': end_time - start_time,
           'train_loss': train_loss,
           'val_loss': val_loss,
