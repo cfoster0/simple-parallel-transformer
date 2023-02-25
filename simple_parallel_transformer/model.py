@@ -110,8 +110,9 @@ class Residual(nn.Module):
         super(Residual, self).__init__()
         self.residual = residual
 
-    def forward(self, x):
-        return x + self.residual(x)
+    def forward(self, x, attn):
+        x_residual, attn_residual = self.residual(x, attn)
+        return x + x_residual, attn + attn_residual
 
 class Block(nn.Module):
     def __init__(self, config: Config, layer_depth: int):
@@ -137,13 +138,12 @@ class Block(nn.Module):
         init_scale = 2.0 / (config.depth ** 0.5)
 
         self.in_ln = nn.LayerNorm(self.hidden_dim)
-        self.mid_ln = nn.LayerNorm(self.qkvp_dim)
+        self.mid_ln = nn.LayerNorm(self.hidden_dim * self.expansion_factor)
+        self.q_ln = nn.LayerNorm(self.hidden_dim)
+        self.k_ln = nn.LayerNorm(self.hidden_dim)
+
         self.out_ln = nn.LayerNorm(self.hidden_dim)
-        self.time_pool = SplitParallel([4, 2, 2], [
-            nn.Identity(),
-            Shift(self.hidden_dim // 4, 1),
-            Shift(self.hidden_dim // 8, 2),
-        ])
+        self.shift = Shift(self.hidden_dim // 4, 1)
         self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
         nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
@@ -154,36 +154,35 @@ class Block(nn.Module):
         causal_bias = -1e10 * (1. - causal_mask)
         self.register_buffer('causal_bias', rearrange(causal_bias, "i j -> () () i j"))
 
-    def forward(self, x):
+    def forward(self, x, accumulated_logits):
         b, l, d = x.shape
 
         x = self.in_ln(x)
-        x = self.time_pool(x)
+        x[..., :d//4] = self.shift(x[..., :d//4])
         x = self.in_proj(x)
-        x = self.mid_ln(F.relu(x))
         q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
                                    self.hidden_dim,
                                    self.hidden_dim,
                                    self.hidden_dim * self.expansion_factor
                                    ], -1)
-        (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b i h d", h=self.heads), (q, k, v))
-        a = einsum("b i h d, b j h d -> b h i j", q, k) * (self.head_dim ** -0.5)
-        a = self.causal_bias + self.alibi(a)
-        a = F.softmax(a, dim=-1)
-        o = einsum("b h i j, b j h d -> b i h d", a, v)
-        o = rearrange(o, "b i h d -> b i (h d)")
+        q = self.q_ln(q)
+        k = self.k_ln(k)
+        (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads, b=b), (q, k, v))
+        logits = einsum("b h i d, b h j d -> b h i j", q, k) * (self.head_dim ** -0.5)
+        logit_residual = logits.mean(dim=1, keepdim=True)
+        logits = self.causal_bias + self.alibi(accumulated_logits + logits)
+        a = F.softmax(logits, dim=-1)
+        o = einsum("b h i j, b h j d -> b h i d", a, v)
+        o = rearrange(o, "b h i d -> b i (h d)")
         
-        p = F.gelu(p)
-        
-        p1 = p
-        p2 = torch.roll(p, 1, dims=-1)
-        p = einsum("b i d, b i d -> b i d", p1, p2)
+        p = self.mid_ln(p)
+        p = F.relu(p)
         
         x = torch.cat([o, p], dim=-1)
         x = self.out_proj(x)
         x = self.out_ln(x)
-        return x
+        return x, logit_residual
 
 class Transformer(nn.Module):
     def __init__(self, config: Config):
@@ -194,12 +193,14 @@ class Transformer(nn.Module):
         hidden representations become token distributions).
         """
         super(Transformer, self).__init__()
+        self.config = config
         self.max_seq_len = config.max_seq_len
         hidden_dim = config.heads * config.head_dim
         self.sos_index = config.vocab_size
         
         self.prelude = nn.Sequential(*[
                                   nn.Embedding(config.vocab_size + 1, hidden_dim),
+                                  nn.LayerNorm(hidden_dim),
                                   ])
         self.body = nn.Sequential(*[Residual(Block(config, layer_depth)) for layer_depth in range(config.depth)])
         self.postlude = nn.Sequential(*[
@@ -208,8 +209,10 @@ class Transformer(nn.Module):
                                   ])
 
     def forward(self, x):
+        b, i = x.shape
         x = self.prelude(x)
+        attn = torch.zeros((b, 1, i, i), device=x.device)
         for (i, layer) in enumerate(self.body):
-            x = layer(x)
+            x, attn = layer(x, attn)
         x = self.postlude(x)
         return x
