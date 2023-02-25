@@ -200,7 +200,6 @@ class Transformer(nn.Module):
         
         self.prelude = nn.Sequential(*[
                                   nn.Embedding(config.vocab_size + 1, hidden_dim),
-                                  nn.LayerNorm(hidden_dim),
                                   ])
         self.body = nn.Sequential(*[Residual(Block(config, layer_depth)) for layer_depth in range(config.depth)])
         self.postlude = nn.Sequential(*[
