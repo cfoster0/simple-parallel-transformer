@@ -7,6 +7,7 @@ from einops import rearrange
 from opt_einsum import contract
 
 from dataclasses import dataclass
+from torch_discounted_cumsum import discounted_cumsum_left
 
 def exists(val):
     return val is not None
@@ -147,3 +148,27 @@ class KroneckerProjection(nn.Module):
         C = torch.kron(self.A, self.B)
         out = einsum("... m, m n -> ... n", x, C)
         return out
+    
+class LRU(nn.Module):
+    def __init__(self, d_hidden, r_min=0.4, r_max=0.99):
+        super(LRU, self).__init__()
+        uniforms = torch.rand(d_hidden)
+        r_min_squared = r_min ** 2
+        r_max_squared = r_max ** 2
+        nus = - torch.log(uniforms * (r_max_squared - r_min_squared) + r_min_squared) / 2.
+        nu_logs = torch.log(nus)
+        self.nu_logs = nn.Parameter(nu_logs)
+
+    def forward(self, x):
+      nus = torch.exp(self.nu_logs)
+      lambdas = torch.exp(-nus)
+      gammas = (1. - (torch.abs(lambdas) ** 2)) ** 0.5
+      values = gammas[None, None] * x
+      b, i, d = x.shape
+      
+      batch_lambdas = repeat(lambdas, "d -> (b d)", b=b)
+      values = rearrange(values, "b i d -> (b d) i")
+      hidden = discounted_cumsum_left(values, batch_lambdas)
+      hidden = rearrange(hidden, "(b d) i -> b i d", b=b, d=d)
+      return hidden
+    
