@@ -18,6 +18,7 @@ setup(
     'torch>=1.6',
     'einops>=0.3',
     'hydra-core',
+    'opt_einsum',
     'wandb',
   ],
   classifiers=[
