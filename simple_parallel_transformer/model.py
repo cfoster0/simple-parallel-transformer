@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from torch import einsum
 from einops import rearrange
 
+from opt_einsum import contract
+
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
 
@@ -18,7 +20,6 @@ class Config:
     head_dim: int
     vocab_size: int
     max_seq_len: int = 2048
-    expansion_factor: int = 4
     seed: int = 10101
         
 cs = ConfigStore.instance()
@@ -131,24 +132,25 @@ class Block(nn.Module):
         self.head_dim = config.head_dim
         self.hidden_dim = self.heads * self.head_dim
         self.max_seq_len = config.max_seq_len
-        self.expansion_factor = config.expansion_factor
-        self.qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
-        self.vp_dim = self.hidden_dim * (1 + self.expansion_factor)
+        self.qkv_dim = self.hidden_dim * (3 + 2)
+        self.vp_dim = self.hidden_dim * (1 + 1)
 
         init_scale = 2.0 / (config.depth ** 0.5)
 
         self.in_ln = nn.LayerNorm(self.hidden_dim)
-        self.mid_ln = nn.LayerNorm(self.hidden_dim * self.expansion_factor)
+        self.mid_ln = nn.LayerNorm(self.hidden_dim * 2)
         self.q_ln = nn.LayerNorm(self.hidden_dim)
         self.k_ln = nn.LayerNorm(self.hidden_dim)
 
         self.out_ln = nn.LayerNorm(self.hidden_dim)
         self.shift = Shift(self.hidden_dim // 4, 1)
-        self.in_proj = nn.Linear(self.hidden_dim, self.qkvp_dim, False)
+        self.in_proj = nn.Linear(self.hidden_dim, self.qkv_dim, False)
         nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
         nn.init.zeros_(self.out_proj.weight)
         self.alibi = AlibiPositionalBias(self.heads)
+
+        self.mixing_tensor = nn.Parameter(torch.randn(self.hidden_dim, self.hidden_dim))
 
         causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
         causal_bias = -1e10 * (1. - causal_mask)
@@ -159,12 +161,12 @@ class Block(nn.Module):
 
         x = self.in_ln(x)
         x[..., :d//4] = self.shift(x[..., :d//4])
-        x = self.in_proj(x)
-        q, k, v, p = torch.split(x, [
+        y = self.in_proj(x)
+        q, k, v, p = torch.split(y, [
                                    self.hidden_dim,
                                    self.hidden_dim,
                                    self.hidden_dim,
-                                   self.hidden_dim * self.expansion_factor
+                                   self.hidden_dim * 2,
                                    ], -1)
         q = self.q_ln(q)
         k = self.k_ln(k)
@@ -175,10 +177,12 @@ class Block(nn.Module):
         a = F.softmax(logits, dim=-1)
         o = einsum("b h i j, b h j d -> b h i d", a, v)
         o = rearrange(o, "b h i d -> b i (h d)")
-        
-        p = self.mid_ln(p)
-        p = F.relu(p)
-        
+
+        input = self.mid_ln(p)
+        left = p[..., :self.hidden_dim]
+        right = p[..., self.hidden_dim:]
+        p = contract("...r, ...r, or -> ...o", left, right, self.mixing_tensor) * (self.hidden_dim ** -0.5)
+
         x = torch.cat([o, p], dim=-1)
         x = self.out_proj(x)
         x = self.out_ln(x)
