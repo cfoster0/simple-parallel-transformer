@@ -64,32 +64,6 @@ class AlibiPositionalBias(nn.Module):
         bias = F.pad(bias, (0, 0, 0, 0, 0, h - bias.shape[1]))
         self.register_buffer('bias', bias, persistent = False)
         return qk_dots + self.bias
-
-class SplitParallel(nn.Module):
-    def __init__(self, ratios, modules, dim=-1):
-        super(SplitParallel, self).__init__()
-        assert len(ratios) == len(modules), f"Number of ratios {len(ratios)} must be equal to number of modules {len(modules)}"
-        self.ratios = ratios
-        self.submodules = nn.ModuleList(modules)
-        if dim != -1:
-            raise NotImplementedError("Only splitting last dimension is currently supported")
-        self.dim = dim
-    
-    def forward(self, x):
-        d = x.size(self.dim)
-        assert d % sum(self.ratios) == 0, f"Total {sum(self.ratios)} of ratios {self.ratios} must evenly divide dimension = {d}"
-        stride = d // sum(self.ratios)
-        
-        out = x
-        cursor = 0
-        for (ratio, module) in zip(self.ratios, self.submodules):
-            span = ratio * stride
-            if self.dim == -1:
-                out[..., cursor:cursor+span] = module(x[..., cursor:cursor+span])
-            else:
-                raise NotImplementedError("Only splitting last dimension is currently supported")
-            cursor += span
-        return out
       
 class Shift(nn.Module):
     def __init__(self, dimensions, n):
@@ -135,8 +109,6 @@ class Block(nn.Module):
         self.qkv_dim = self.hidden_dim * (3 + 2)
         self.vp_dim = self.hidden_dim * (1 + 1)
 
-        init_scale = 2.0 / (config.depth ** 0.5)
-
         self.in_ln = nn.LayerNorm(self.hidden_dim)
         self.mid_ln = nn.LayerNorm(self.hidden_dim * 2)
         self.q_ln = nn.LayerNorm(self.hidden_dim)
@@ -145,7 +117,7 @@ class Block(nn.Module):
         self.out_ln = nn.LayerNorm(self.hidden_dim)
         self.shift = Shift(self.hidden_dim // 4, 1)
         self.in_proj = nn.Linear(self.hidden_dim, self.qkv_dim, False)
-        nn.init.orthogonal_(self.in_proj.weight, gain=init_scale)
+        nn.init.orthogonal_(self.in_proj.weight)
         self.out_proj = nn.Linear(self.vp_dim, self.hidden_dim, True)
         nn.init.zeros_(self.out_proj.weight)
         self.alibi = AlibiPositionalBias(self.heads)
