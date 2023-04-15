@@ -105,12 +105,12 @@ class Block(nn.Module):
                                    self.hidden_dim,
                                    self.hidden_dim * self.expansion_factor
                                    ], -1)
-        (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b i h d", h=self.heads), (q, k, v))
-        a = contract("b i h d, b j h d -> b h i j", q, k) * (self.head_dim ** -0.5)
+        (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
+        a = contract("b h i d, b h j d -> b h i j", q, k) * (self.head_dim ** -0.5)
         a = self.causal_bias + self.alibi(a)
         a = F.softmax(a, dim=-1)
-        o = contract("b h i j, b j h d -> b i h d", a, v)
-        o = rearrange(o, "b i h d -> b i (h d)")
+        o = contract("b h i j, b h j d -> b h i d", a, v)
+        o = rearrange(o, "b h i d -> b i (h d)")
         p = contract("b i d, b i d -> b i d", F.gelu(p), torch.roll(p, 1, dims=-1))
         x = torch.cat([o, p], dim=-1)
         x = self.out_proj(x)
