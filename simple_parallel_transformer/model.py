@@ -26,8 +26,9 @@ cs.store(name="config", node=Config)
 def exists(val):
     return val is not None
 
-def shift(x, dimensions, n):
-  return torch.cat([F.pad(x[..., :dimensions], (0, 0, n, -n), value=0), x[..., dimensions:]], dim=-1)
+# N-timestep delay, assuming time is penultimate axis
+def shift(x, n):
+  return F.pad(x, (0, 0, n, -n), value=0)
 
 class LearnedALiBi(nn.Module):
     def __init__(self, heads):
@@ -95,8 +96,8 @@ class Block(nn.Module):
         b, l, d = x.shape
 
         x = self.in_ln(x)
-        x[..., :d//4] = shift(x[..., :d//4], self.hidden_dim // 4, 1)
-        x[..., d//8:] = shift(x[..., d//8:], self.hidden_dim // 8, 2)
+        x[..., :d//4] = shift(x[..., :d//4], 1)
+        x[..., d//8:] = shift(x[..., d//8:], 2)
         x = self.mid_ln(F.relu(self.in_proj(x)))
         q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
