@@ -85,7 +85,6 @@ class Block(nn.Module):
         self.out_proj = nn.Linear(vp_dim, self.hidden_dim, bias=False)
         nn.init.orthogonal_(self.in_proj.weight)
         nn.init.zeros_(self.out_proj.weight)
-        nn.init.zeros_(self.out_proj.bias)
 
         causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
         causal_bias = -1e10 * (1. - causal_mask)
