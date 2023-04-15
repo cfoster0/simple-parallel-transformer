@@ -81,8 +81,8 @@ class Block(nn.Module):
         self.mid_ln = nn.LayerNorm(qkvp_dim)
         self.out_ln = nn.LayerNorm(self.hidden_dim)
 
-        self.in_proj = nn.Linear(self.hidden_dim, qkvp_dim, False)
-        self.out_proj = nn.Linear(vp_dim, self.hidden_dim, True)
+        self.in_proj = nn.Linear(self.hidden_dim, qkvp_dim, bias=False)
+        self.out_proj = nn.Linear(vp_dim, self.hidden_dim, bias=False)
         nn.init.orthogonal_(self.in_proj.weight)
         nn.init.zeros_(self.out_proj.weight)
         nn.init.zeros_(self.out_proj.bias)
