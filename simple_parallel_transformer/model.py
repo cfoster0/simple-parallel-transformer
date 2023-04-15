@@ -121,10 +121,10 @@ class Transformer(nn.Module):
         """
         In this module is the code for the model as a whole. Rather than
         standard residual connections, in this design, each layer aggregates
-        the outputs of previous layers gated by a learned scalar. This scalar
-        is initialized to 1, which makes the default behavior the same as
+        the outputs of previous layers gated by learned scalars. These scalars
+        are initialized to 1, which makes the default behavior the same as
         normal residual connections, but allows the net to gate-off certain
-        contributions & construct its outputs from only certain layers.
+        paths, & dedicate layer+channel combos to logit output &c.
         """
         super(Transformer, self).__init__()
         self.max_seq_len = config.max_seq_len
@@ -138,7 +138,7 @@ class Transformer(nn.Module):
                                   ])
         self.layers = nn.ModuleList([embedding] + [Block(config) for _ in range(config.depth)] + [unembedding])
 
-        self.gates = nn.ParameterList([nn.Parameter(torch.ones(i)) for i in range(len(self.layers))])
+        self.gates = nn.ParameterList([nn.Parameter(torch.ones(hidden_dim, i)) for i in range(len(self.layers))])
 
     def forward(self, x):
         b, i = x.shape
@@ -147,6 +147,6 @@ class Transformer(nn.Module):
             if i == 0: # Embedding Layer uses original input
               x_in = x
             else: # Non-embedding layers aggregate from previous layers; initialized as residual
-              x_in = contract("l, bidl -> bid", self.gates[i], torch.stack(outputs, -1))
+              x_in = contract("dl, bidl -> bid", self.gates[i], torch.stack(outputs, -1))
             outputs += [layer(x_in)]
         return outputs[-1]
