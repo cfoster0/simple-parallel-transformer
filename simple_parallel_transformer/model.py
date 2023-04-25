@@ -97,7 +97,7 @@ class Block(nn.Module):
 
         x = self.in_ln(x)
         x[..., :d//4] = shift(x[..., :d//4], 1)
-        x[..., d//8:] = shift(x[..., d//8:], 2)
+        x[..., -d//8:] = shift(x[..., -d//8:], 2)
         x = self.mid_ln(F.relu(self.in_proj(x)))
         q, k, v, p = torch.split(x, [
                                    self.hidden_dim,
