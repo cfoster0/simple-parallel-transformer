@@ -90,7 +90,7 @@ class Block(nn.Module):
         causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
         causal_bias = -1e10 * (1. - causal_mask)
         self.register_buffer('causal_bias', rearrange(causal_bias, "i j -> () () i j"))
-        self.alibi = LearnedALiBi(self.heads)
+        self.alibi = LearnedALiBi(self.heads // 2)
 
     def forward(self, x):
         b, l, d = x.shape
@@ -107,7 +107,11 @@ class Block(nn.Module):
                                    ], -1)
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
         a = contract("b h i d, b h j d -> b h i j", q, k) * (self.head_dim ** -0.5)
-        a = self.causal_bias + self.alibi(a)
+        nonspatial, spatial = torch.split(a, [
+          self.heads - (self.heads // 2),
+          self.heads // 2,
+        ], 1)
+        a = self.causal_bias + torch.cat([nonspatial, self.alibi(spatial)], dim=1)
         a = F.softmax(a, dim=-1)
         o = contract("b h i j, b h j d -> b h i d", a, v)
         o = rearrange(o, "b h i d -> b i (h d)")
