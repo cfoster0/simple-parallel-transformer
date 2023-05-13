@@ -7,7 +7,7 @@ import tqdm
 import gzip
 import numpy as np
 import torch
-import torch.optim as optim
+from lion_pytorch import Lion
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
@@ -103,11 +103,11 @@ def train(cfg: Config) -> None:
     config['parameters'] = pytorch_total_params
 
     if not DRY_RUN:
-        wandb.init(project="transformer-enwiki8-arena", config=config)
+        wandb.init(project="transformer-enwiki8-interp", config=config)
 
     # optimizer
 
-    optim = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    optim = Lion(model.parameters(), lr=LEARNING_RATE)
 
     # training
 
@@ -122,6 +122,16 @@ def train(cfg: Config) -> None:
         model.train()
 
         train_loss = 0
+
+        logs = {}
+
+        for name, param in model.named_parameters():
+          if param.numel() == 0:
+            continue
+          logs[f"Parameters - {name} - MEAN"] = param.mean().item()
+          logs[f"Parameters - {name} - STDEV"] = param.std().item()
+          logs[f"Parameters - {name} - MIN"] = param.min().item()
+          logs[f"Parameters - {name} - MAX"] = param.max().item()
 
         for __ in range(GRADIENT_ACCUMULATE_EVERY):
             loss = model(next(train_loader))
@@ -157,12 +167,11 @@ def train(cfg: Config) -> None:
             output_str = decode_tokens(sample)
             print(output_str)
 
-        logs = {}
         
         logs = {
           **logs,
-          'iter': i,
           'tokens': tokens,
+          'iter': i,
           'step_time': end_time - start_time,
           'train_loss': train_loss,
           'val_loss': val_loss,
