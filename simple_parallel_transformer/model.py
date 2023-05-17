@@ -48,25 +48,31 @@ class LearnedALiBi(nn.Module):
         return qk_dots + bias
     
 class Block(nn.Module):
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, depth: int):
         """
-        In this module is the code for a transformer block. This builds on
-        several ideas: (1) Ben Wang's parallel attention and feedforward block
-        (2) Cogview's Sandwich Layer Norm, which puts a Layer Norm at the start 
-        and end of the block (3) ALiBi-like per-head learned linear biases on 
-        the attention similar to ALiBi (4) BlinkDL's token shift on a portion
-        of dimensions to provide direct access to previous token representations
-        & easy n-gram learning and (5) a home-grown modification to GeGLU that
-        uses a single projection matrix and uses a rolled version of the original
-        representation to do the linear modulation (6) a home-grown modification
-        that adds a ReLU + LayerNorm after the initial projection & token shift.
+        In this module is the code for a transformer-like block. It builds on
+        several new ideas since the original "Attention is all you need":
+        (1) Cogview's Sandwich Layer Norm, which puts a LayerNorm at the start 
+            and end of the block
+        (2) Parallel attention and MLP, originated by Ben Wang
+        (3) Token shift--originated by BlinkDL--on a portion of dimensions 
+            to provide direct access to previous token representations & 
+            easy n-gram learning, for the first 2 layers.
+        (4) a home-grown modification that adds a LayerNorm after the 
+            initial projection & token shift, similar in spirit to Normformer
+        (5) an ALiBi-like per-head learned linear biases on the attention similar 
+            to ALiBi
+        (6) a bilinear gated linear unit (GLU) to replace the traditional 
+            ReLu/GELU nonlinearity in the MLP
+
         ---
         References:
-        Parallel Block - https://github.com/kingoflolz/mesh-transformer-jax
         Sandwich Layer Norm - https://arxiv.org/abs/2105.13290
-        ALiBi - https://arxiv.org/abs/2108.12409
+        Parallel Block - https://github.com/kingoflolz/mesh-transformer-jax
         Token Shift - https://github.com/BlinkDL/RWKV-LM
-        GeGLU - https://arxiv.org/abs/2002.05202v1
+        Normformer - https://arxiv.org/abs/2110.09456
+        ALiBi - https://arxiv.org/abs/2108.12409
+        Bilinear GLU - https://arxiv.org/abs/2002.05202v1
         """
         super(Block, self).__init__()
         self.heads = config.heads
@@ -76,7 +82,7 @@ class Block(nn.Module):
         self.hidden_dim = self.heads * self.head_dim
 
         qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
-        vp_dim = self.hidden_dim * (1 + self.expansion_factor)
+        vp_dim = self.hidden_dim + ((self.hidden_dim * self.expansion_factor) // 2)
 
         self.in_ln = nn.LayerNorm(self.hidden_dim)
         self.mid_ln = nn.LayerNorm(qkvp_dim)
@@ -92,18 +98,22 @@ class Block(nn.Module):
         self.register_buffer('causal_bias', rearrange(causal_bias, "i j -> () () i j"))
         self.alibi = LearnedALiBi(self.heads // 2)
 
+        self.depth = depth
+
     def forward(self, x):
         b, l, d = x.shape
 
         x = self.in_ln(x)
-        x[..., :d//4] = shift(x[..., :d//4], 1)
-        x[..., -d//8:] = shift(x[..., -d//8:], 2)
-        x = self.mid_ln(F.relu(self.in_proj(x)))
-        q, k, v, p = torch.split(x, [
+        if self.depth < 2:
+          x[..., :d//4] = shift(x[..., :d//4], 1)
+          x[..., -d//8:] = shift(x[..., -d//8:], 2)
+        x = self.mid_ln(self.in_proj(x))
+        q, k, v, p1, p2 = torch.split(x, [
                                    self.hidden_dim,
                                    self.hidden_dim,
                                    self.hidden_dim,
-                                   self.hidden_dim * self.expansion_factor
+                                   (self.hidden_dim * self.expansion_factor) // 2,
+                                   (self.hidden_dim * self.expansion_factor) // 2,
                                    ], -1)
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
         a = contract("b h i d, b h j d -> b h i j", q, k) * (self.head_dim ** -0.5)
@@ -115,7 +125,7 @@ class Block(nn.Module):
         a = F.softmax(a, dim=-1)
         o = contract("b h i j, b h j d -> b h i d", a, v)
         o = rearrange(o, "b h i d -> b i (h d)")
-        p = contract("b i d, b i d -> b i d", F.gelu(p), torch.roll(p, 1, dims=-1))
+        p = p1 * p2
         x = torch.cat([o, p], dim=-1)
         x = self.out_proj(x)
         x = self.out_ln(x)
@@ -141,7 +151,7 @@ class Transformer(nn.Module):
                                   nn.LayerNorm((hidden_dim)),
                                   nn.Linear(hidden_dim, config.vocab_size, bias=True),
                                   ])
-        self.layers = nn.ModuleList([embedding] + [Block(config) for _ in range(config.depth)] + [unembedding])
+        self.layers = nn.ModuleList([embedding] + [Block(config, i) for i in range(config.depth)] + [unembedding])
 
         self.gates = nn.ParameterList([nn.Parameter(torch.ones(hidden_dim, i)) for i in range(len(self.layers))])
 
