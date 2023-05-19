@@ -13,7 +13,7 @@ class Config:
     """Class for keeping track of config variables."""
     depth: int
     heads: int
-    head_dim: int
+    d_head: int
     vocab_size: int
     max_seq_len: int = 2048
     expansion_factor: int = 4
@@ -74,21 +74,18 @@ class Block(nn.Module):
         """
         super(Block, self).__init__()
         self.heads = config.heads
-        self.head_dim = config.head_dim
+        self.d_head = config.d_head
         self.max_seq_len = config.max_seq_len
-        self.expansion_factor = config.expansion_factor
-        self.hidden_dim = self.heads * self.head_dim
+        self.d_model = self.heads * self.d_head
+        self.d_bilinear = (self.d_model * config.expansion_factor) // 2
         self.depth = depth
+        
+        self.in_ln = nn.LayerNorm(self.d_model)
+        self.mid_ln = nn.LayerNorm((self.d_model * 3) + (self.d_bilinear * 2))
+        self.out_ln = nn.LayerNorm(self.d_model)
 
-        qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
-        vp_dim = self.hidden_dim + ((self.hidden_dim * self.expansion_factor) // 2)
-
-        self.in_ln = nn.LayerNorm(self.hidden_dim)
-        self.mid_ln = nn.LayerNorm(qkvp_dim)
-        self.out_ln = nn.LayerNorm(self.hidden_dim)
-
-        self.in_proj = nn.Linear(self.hidden_dim, qkvp_dim, bias=False)
-        self.out_proj = nn.Linear(vp_dim, self.hidden_dim, bias=False)
+        self.in_proj = nn.Linear(self.d_model, (self.d_model * 3) + (self.d_bilinear * 2), bias=False)
+        self.out_proj = nn.Linear(self.d_model + self.d_bilinear, self.d_model, bias=False)
         nn.init.orthogonal_(self.in_proj.weight)
         nn.init.zeros_(self.out_proj.weight)
 
@@ -104,14 +101,14 @@ class Block(nn.Module):
           x[..., :d//4] = shift(x[..., :d//4], 1)
           x[..., -d//8:] = shift(x[..., -d//8:], 2)
         q, k, v, p1, p2 = torch.split(self.mid_ln(self.in_proj(x)), [
-                                   self.hidden_dim,
-                                   self.hidden_dim,
-                                   self.hidden_dim,
-                                   (self.hidden_dim * self.expansion_factor) // 2,
-                                   (self.hidden_dim * self.expansion_factor) // 2,
+                                   self.d_model,
+                                   self.d_model,
+                                   self.d_model,
+                                   self.d_bilinear,
+                                   self.d_bilinear,
                                    ], -1)
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
-        logits = contract("b h i d, b h j d -> b h i j", q, k) * (self.head_dim ** -0.5)
+        logits = contract("b h i d, b h j d -> b h i j", q, k) * (self.d_head ** -0.5)
         a = F.softmax(self.causal_bias[..., :l, :l] + self.alibi(logits), dim=-1)
         o = rearrange(contract("b h i j, b h j d -> b h i d", a, v), "b h i d -> b i (h d)")
         x = self.out_ln(self.out_proj(torch.cat([o, p1 * p2], dim=-1)))
@@ -130,16 +127,16 @@ class Transformer(nn.Module):
         super(Transformer, self).__init__()
         self.max_seq_len = config.max_seq_len
         self.sos_index = config.vocab_size
-        hidden_dim = config.heads * config.head_dim
+        d_model = config.heads * config.d_head
         
-        embedding = nn.Embedding(config.vocab_size + 1, hidden_dim)
+        embedding = nn.Embedding(config.vocab_size + 1, d_model)
         unembedding = nn.Sequential(*[
-                                  nn.LayerNorm((hidden_dim)),
-                                  nn.Linear(hidden_dim, config.vocab_size, bias=True),
+                                  nn.LayerNorm((d_model)),
+                                  nn.Linear(d_model, config.vocab_size, bias=True),
                                   ])
         self.layers = nn.ModuleList([embedding] + [Block(config, i) for i in range(config.depth)] + [unembedding])
 
-        self.gates = nn.ParameterList([nn.Parameter(torch.ones(hidden_dim, i)) for i in range(len(self.layers))])
+        self.gates = nn.ParameterList([nn.Parameter(torch.ones(d_model, i)) for i in range(len(self.layers))])
 
     def forward(self, x):
         b, i = x.shape
