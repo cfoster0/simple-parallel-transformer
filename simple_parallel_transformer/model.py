@@ -53,9 +53,10 @@ class Block(nn.Module):
         (1) Cogview's Sandwich Layer Norm, which puts a LayerNorm at the start 
             and end of the block
         (2) Parallel attention and MLP, originated by Ben Wang
-        (3) Token shift--originated by BlinkDL--on a portion of dimensions 
-            to provide direct access to previous token representations & 
-            easy n-gram learning, for the first 2 layers.
+        (3) Token shift--originated by BlinkDL--in the first 2 layers on 
+            a portion of dimensions to provide direct access to
+            previous token representations & for easy n-gram learning
+
         (4) a home-grown modification that adds a LayerNorm after the 
             initial projection & token shift, similar in spirit to Normformer
         (5) learned per-head linear biases on the attention logits similar 
