@@ -18,7 +18,6 @@ setup(
     'torch>=1.6',
     'einops>=0.3',
     'hydra-core',
-    'lion-pytorch',
     'opt_einsum',
     'wandb',
   ],

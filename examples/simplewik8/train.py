@@ -7,7 +7,7 @@ import tqdm
 import gzip
 import numpy as np
 import torch
-from lion_pytorch import Lion
+from torch.optim import AdamW
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
@@ -16,8 +16,6 @@ from hydra.utils import get_original_cwd
 
 import time
 import wandb
-from scipy import signal
-from scipy.signal import convolve as sig_convolve
 
 # constants
 
@@ -107,7 +105,16 @@ def train(cfg: Config) -> None:
 
     # optimizer
 
-    optim = Lion(model.parameters(), lr=LEARNING_RATE)
+    optim = AdamW([
+      {
+        'params': [param for name, param in model.named_parameters() if (('in_proj' in name) or ('out_proj' in name))],
+        'weight_decay': 0.01,
+      },
+      {
+        'params': [param for name, param in model.named_parameters() if (('in_proj' not in name) and ('out_proj' not in name))],
+        'weight_decay': 0.,
+      },
+    ], lr=LEARNING_RATE, weight_decay=0.01)
 
     # training
 
