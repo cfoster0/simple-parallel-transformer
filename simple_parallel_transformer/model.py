@@ -23,9 +23,6 @@ cs = ConfigStore.instance()
 # Registering the Config class with the name 'config'.
 cs.store(name="config", node=Config)
 
-def exists(val):
-    return val is not None
-
 # N-timestep delay, assuming time is penultimate axis
 def shift(x, n):
   return F.pad(x, (0, 0, n, -n), value=0)
@@ -33,13 +30,14 @@ def shift(x, n):
 class LearnedALiBi(nn.Module):
     def __init__(self, heads):
         super().__init__()
-        self.slopes = nn.Parameter(rearrange(torch.logspace(0., -6., steps=heads, base=2.), 'h -> () h () ()'))
+        slopes = torch.cat([torch.logspace(0., -6., steps=heads//2, base=2.), torch.zeros(heads - (heads//2))], dim=0)
+        self.slopes = nn.Parameter(rearrange(slopes, 'h -> () h () ()'))
         self.register_buffer('bias', None, persistent = False)
 
     def forward(self, qk_dots):
         h, i, j, device = *qk_dots.shape[-3:], qk_dots.device
 
-        if (not self.training) and exists(self.bias) and self.bias.shape[-1] >= j:
+        if (not self.training) and (self.bias is not None) and (self.bias.shape[-1] >= j):
             return qk_dots + self.bias[..., :j]
 
         bias = rearrange(torch.arange(j, device = device), 'j -> () () () j') * self.slopes
@@ -60,8 +58,8 @@ class Block(nn.Module):
             easy n-gram learning, for the first 2 layers.
         (4) a home-grown modification that adds a LayerNorm after the 
             initial projection & token shift, similar in spirit to Normformer
-        (5) an ALiBi-like per-head learned linear biases on the attention similar 
-            to ALiBi
+        (5) learned per-head linear biases on the attention logits similar 
+            to ALiBi; half of heads are initialized as nonspatial
         (6) a bilinear gated linear unit (GLU) to replace the traditional 
             ReLu/GELU nonlinearity in the MLP
 
@@ -80,6 +78,7 @@ class Block(nn.Module):
         self.max_seq_len = config.max_seq_len
         self.expansion_factor = config.expansion_factor
         self.hidden_dim = self.heads * self.head_dim
+        self.depth = depth
 
         qkvp_dim = self.hidden_dim * (3 + self.expansion_factor)
         vp_dim = self.hidden_dim + ((self.hidden_dim * self.expansion_factor) // 2)
@@ -94,12 +93,9 @@ class Block(nn.Module):
         nn.init.zeros_(self.out_proj.weight)
 
         causal_mask = torch.tril(torch.ones((self.max_seq_len, self.max_seq_len)))
-        causal_bias = -1e10 * (1. - causal_mask)
-        self.register_buffer('causal_bias', rearrange(causal_bias, "i j -> () () i j"))
-        self.alibi = LearnedALiBi(self.heads // 2)
-
-        self.depth = depth
-
+        self.register_buffer('causal_bias', rearrange(-1e10 * (1. - causal_mask), "i j -> () () i j"))
+        self.alibi = LearnedALiBi(self.heads)
+        
     def forward(self, x):
         b, l, d = x.shape
 
@@ -107,8 +103,7 @@ class Block(nn.Module):
         if self.depth < 2:
           x[..., :d//4] = shift(x[..., :d//4], 1)
           x[..., -d//8:] = shift(x[..., -d//8:], 2)
-        x = self.mid_ln(self.in_proj(x))
-        q, k, v, p1, p2 = torch.split(x, [
+        q, k, v, p1, p2 = torch.split(self.mid_ln(self.in_proj(x)), [
                                    self.hidden_dim,
                                    self.hidden_dim,
                                    self.hidden_dim,
@@ -116,19 +111,10 @@ class Block(nn.Module):
                                    (self.hidden_dim * self.expansion_factor) // 2,
                                    ], -1)
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
-        a = contract("b h i d, b h j d -> b h i j", q, k) * (self.head_dim ** -0.5)
-        nonspatial, spatial = torch.split(a, [
-          self.heads - (self.heads // 2),
-          self.heads // 2,
-        ], 1)
-        a = self.causal_bias + torch.cat([nonspatial, self.alibi(spatial)], dim=1)
-        a = F.softmax(a, dim=-1)
-        o = contract("b h i j, b h j d -> b h i d", a, v)
-        o = rearrange(o, "b h i d -> b i (h d)")
-        p = p1 * p2
-        x = torch.cat([o, p], dim=-1)
-        x = self.out_proj(x)
-        x = self.out_ln(x)
+        logits = contract("b h i d, b h j d -> b h i j", q, k) * (self.head_dim ** -0.5)
+        a = F.softmax(self.causal_bias[..., :l, :l] + self.alibi(logits), dim=-1)
+        o = rearrange(contract("b h i j, b h j d -> b h i d", a, v), "b h i d -> b i (h d)")
+        x = self.out_ln(self.out_proj(torch.cat([o, p1 * p2], dim=-1)))
         return x
 
 class Transformer(nn.Module):
