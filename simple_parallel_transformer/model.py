@@ -52,10 +52,11 @@ class Block(nn.Module):
         several new ideas since the original "Attention is all you need":
         (1) Cogview's Sandwich Layer Norm, which puts a LayerNorm at the start 
             and end of the block
-        (2) Parallel attention and MLP, originated by Ben Wang
-        (3) Token shift--originated by BlinkDL--in the first 2 layers on 
-            a portion of dimensions to provide direct access to
-            previous token representations & for easy n-gram learning
+        (2) Parallel attention and MLP, originated by Ben Wang; the MLP is
+            left out of the first block, as it would be redundant 
+        (3) Token shift--originated by BlinkDL--on a portion of dimensions
+            to provide direct access to previous token representations & 
+            for easy n-gram learning
         (4) a home-grown modification that adds a LayerNorm after the 
             initial projection & token shift, similar in spirit to Normformer
         (5) learned per-head linear biases on the attention logits similar 
@@ -73,12 +74,13 @@ class Block(nn.Module):
         Bilinear GLU - https://arxiv.org/abs/2002.05202v1
         """
         super(Block, self).__init__()
+        self.depth = depth
         self.heads = config.heads
         self.d_head = config.d_head
         self.max_seq_len = config.max_seq_len
         self.d_model = self.heads * self.d_head
-        self.d_bilinear = (self.d_model * config.expansion_factor) // 2
-        self.depth = depth
+        self.expansion_factor = config.expansion_factor if depth > 0 else 0
+        self.d_bilinear = (self.d_model * self.expansion_factor) // 2
         
         self.in_ln = nn.LayerNorm(self.d_model)
         self.mid_ln = nn.LayerNorm((self.d_model * 3) + (self.d_bilinear * 2))
@@ -97,9 +99,7 @@ class Block(nn.Module):
         b, l, d = x.shape
 
         x = self.in_ln(x)
-        if self.depth < 2:
-          x[..., :d//4] = shift(x[..., :d//4], 1)
-          x[..., -d//8:] = shift(x[..., -d//8:], 2)
+        x[..., :d//4] = shift(x[..., :d//4], 1)
         q, k, v, p1, p2 = torch.split(self.mid_ln(self.in_proj(x)), [
                                    self.d_model,
                                    self.d_model,
