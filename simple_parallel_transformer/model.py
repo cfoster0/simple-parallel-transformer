@@ -129,22 +129,17 @@ class Transformer(nn.Module):
         self.sos_index = config.vocab_size
         d_model = config.heads * config.d_head
         
-        embedding = nn.Embedding(config.vocab_size + 1, d_model)
-        unembedding = nn.Sequential(*[
+        self.embed = nn.Embedding(config.vocab_size + 1, d_model)
+        self.unembed = nn.Sequential(*[
                                   nn.LayerNorm((d_model)),
                                   nn.Linear(d_model, config.vocab_size, bias=True),
                                   ])
-        self.layers = nn.ModuleList([embedding] + [Block(config, i) for i in range(config.depth)] + [unembedding])
-
-        self.gates = nn.ParameterList([nn.Parameter(torch.ones(d_model, i)) for i in range(len(self.layers))])
+        self.layers = nn.ModuleList([Block(config, i) for i in range(config.depth)])
 
     def forward(self, x):
         b, i = x.shape
         outputs = []
+        x = self.embed(x)
         for (i, layer) in enumerate(self.layers):
-            if i == 0: # Embedding Layer uses original input
-              x_in = x
-            else: # Non-embedding layers aggregate from previous layers; initialized as residual
-              x_in = contract("dl, bidl -> bid", self.gates[i], torch.stack(outputs, -1))
-            outputs += [layer(x_in)]
-        return outputs[-1]
+            x = x + layer(x)
+        return self.unembed(x)
