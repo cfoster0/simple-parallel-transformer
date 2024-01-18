@@ -20,9 +20,9 @@ import wandb
 # constants
 
 NUM_BATCHES = int(1e5)
-BATCH_SIZE = 4
-GRADIENT_ACCUMULATE_EVERY = 4
-LEARNING_RATE = 1e-4
+BATCH_SIZE = 12
+GRADIENT_ACCUMULATE_EVERY = 5
+LEARNING_RATE = 6e-4
 VALIDATE_EVERY  = 100
 GENERATE_EVERY  = 50
 GENERATE_LENGTH = 512
@@ -107,14 +107,14 @@ def train(cfg: Config) -> None:
 
     optim = AdamW([
       {
-        'params': [param for name, param in model.named_parameters() if (('in_proj' in name) or ('out_proj' in name))],
-        'weight_decay': 0.01,
-      },
-      {
-        'params': [param for name, param in model.named_parameters() if (('in_proj' not in name) and ('out_proj' not in name))],
+        'params': [param for name, param in model.named_parameters() if ('proj' not in name)],
         'weight_decay': 0.,
       },
-    ], lr=LEARNING_RATE, weight_decay=0.01)
+      {
+        'params': [param for name, param in model.named_parameters() if ('proj' in name)],
+        'weight_decay': 1e-1,
+      },
+    ], lr=LEARNING_RATE)
 
     # training
 
@@ -131,14 +131,6 @@ def train(cfg: Config) -> None:
         train_loss = 0
 
         logs = {}
-
-        for name, param in model.named_parameters():
-          if param.numel() == 0:
-            continue
-          logs[f"Parameters - {name} - MEAN"] = param.mean().item()
-          logs[f"Parameters - {name} - STDEV"] = param.std().item()
-          logs[f"Parameters - {name} - MIN"] = param.min().item()
-          logs[f"Parameters - {name} - MAX"] = param.max().item()
 
         for __ in range(GRADIENT_ACCUMULATE_EVERY):
             loss = model(next(train_loader))
