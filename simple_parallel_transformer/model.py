@@ -8,6 +8,7 @@ from opt_einsum import contract
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
 
+from mamba_ssm import Mamba
 
 @dataclass
 class Config:
@@ -16,8 +17,8 @@ class Config:
     heads: int
     d_head: int
     vocab_size: int
+    expansion_factor: int = 2
     max_seq_len: int = 2048
-    expansion_factor: int = 4
     seed: int = 10101
         
 cs = ConfigStore.instance()
@@ -38,30 +39,42 @@ class LearnedALiBi(nn.Module):
         bias = F.pad(bias, (0, 0, 0, 0, 0, h - bias.shape[1]))
         return qk_dots + bias
     
-class Attention(nn.Module):
+
+class Block(nn.Module):
     def __init__(self, config: Config):
         """
-        In this module is the code for a transformer-like attention block. It 
-        builds on some new ideas since the original "Attention is all you need":
-        (1) Smeared keys on each head, to facilitate learning of previous-token
-        heads, induction heads, and n-grams.
-        (2) learned per-head linear biases on the attention logits similar 
+        In this module is the code for a transformer-like block. It builds on
+        several new ideas since the original "Attention is all you need":
+        (1) Cogview's Sandwich Layer Norm, which puts a LayerNorm at the start 
+            and end of the block
+        (2) Single-block design from Gated Attention Unit, by way of Mamba.
+            Instead of a separate attention and feedforward layer, combines
+            them in parallel as a gated attention layer, with the gating being
+            passed into a SiLu/SwiGLU activation function. Also expands the
+            internal dimension to be larger than the residual dimension.
+        (3) Smeared keys on each head, to facilitate learning of previous-token
+            heads, induction heads, and n-grams.
+        (4) learned per-head linear biases on the attention logits similar 
             to ALiBi; half of heads are initialized as nonspatial
 
         ---
         References:
+        Sandwich Layer Norm - https://arxiv.org/abs/2105.13290
+        GAU - https://arxiv.org/abs/2202.10447
+        Mamba - https://arxiv.org/abs/2312.00752
         Smeared Key - https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html
         ALiBi - https://arxiv.org/abs/2108.12409
         """
-        super(Attention, self).__init__()
+        super(Block, self).__init__()
         self.heads = config.heads
         self.d_head = config.d_head
         self.d_model = self.heads * self.d_head
+        self.expansion_factor = config.expansion_factor
         
         self.ln_1 = nn.LayerNorm(self.d_model)
         self.ln_2 = nn.LayerNorm(self.d_model)
-        self.in_proj = nn.Linear(self.d_model, self.d_model * 3, bias=False)
-        self.out_proj = nn.Linear(self.d_model, self.d_model, bias=False)
+        self.in_proj = nn.Linear(self.d_model, self.expansion_factor * (self.d_model * 4), bias=False)
+        self.out_proj = nn.Linear(self.expansion_factor * self.d_model, self.d_model, bias=False)
         nn.init.normal_(self.out_proj.weight, mean=0.0, std=0.02/sqrt(2 * config.depth))
         causal_mask = torch.tril(torch.ones((config.max_seq_len, config.max_seq_len)))
         self.register_buffer('causal_bias', rearrange(-1e10 * (1. - causal_mask), "i j -> () () i j"))
@@ -71,46 +84,19 @@ class Attention(nn.Module):
     def forward(self, x):
         b, l, d = x.shape
 
-        q, k, v = torch.split(self.in_proj(self.ln_1(x)), [
-                                   self.d_model,
-                                   self.d_model,
-                                   self.d_model,
+        q, k, v, p = torch.split(self.in_proj(self.ln_1(x)), [
+                                   self.expansion_factor * self.d_model,
+                                   self.expansion_factor * self.d_model,
+                                   self.expansion_factor * self.d_model,
+                                   self.expansion_factor * self.d_model,
                                    ], -1)
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
         smear = F.sigmoid(self.smear_factor)[None, :, None, None]
         k = ((1 - smear) * k) + (smear * F.pad(k, (0, 0, 1, -1)))
-        logits = contract("b h i d, b h j d -> b h i j", q, k) * (self.d_head ** -0.5)
+        logits = contract("b h i d, b h j d -> b h i j", q, k) * ((self.expansion_factor * self.d_head) ** -0.5)
         a = F.softmax(self.causal_bias[..., :l, :l] + self.alibi(logits), dim=-1)
-        o = rearrange(contract("b h i j, b h j d -> b h i d", a, v), "b h i d -> b i (h d)")
+        o = F.silu(p) * rearrange(contract("b h i j, b h j d -> b h i d", a, v), "b h i d -> b i (h d)")
         return self.ln_2(self.out_proj(o))
-
-class MLP(nn.Module):
-    def __init__(self, config: Config):
-        """
-        In this module is the code for a transformer-like MLP block. It uses a 
-        SiLU gated linear unit (also known as SwiGLU) to replace the 
-        traditional ReLu/GELU nonlinearity in the MLP
-
-        ---
-        References:
-        GLU - https://arxiv.org/abs/2002.05202v1
-        """
-        super(MLP, self).__init__()
-        self.d_model = config.heads * config.d_head
-        self.d_bilinear = (self.d_model * config.expansion_factor) // 2
-        
-        self.ln_1 = nn.LayerNorm(self.d_model)
-        self.ln_2 = nn.LayerNorm(self.d_model)
-        self.in_proj = nn.Linear(self.d_model, self.d_bilinear * 2, bias=False)
-        self.out_proj = nn.Linear(self.d_bilinear, self.d_model, bias=False)
-        nn.init.normal_(self.out_proj.weight, mean=0.0, std=0.02/sqrt(2 * config.depth))
-        
-    def forward(self, x):
-        p1, p2 = torch.split(self.in_proj(self.ln_1(x)), [
-                                   self.d_bilinear,
-                                   self.d_bilinear,
-                                   ], -1)
-        return self.ln_2(self.out_proj(torch.cat([F.silu(p1) * p2], dim=-1)))
 
 class Transformer(nn.Module):
     def __init__(self, config: Config):
@@ -123,8 +109,7 @@ class Transformer(nn.Module):
         d_model = config.heads * config.d_head
         
         self.embed = nn.Embedding(config.vocab_size + 1, d_model)
-        self.attentions = nn.ModuleList([Attention(config) for i in range(config.depth)])
-        self.mlps = nn.ModuleList([MLP(config) for i in range(config.depth)])
+        self.blocks = nn.ModuleList([Block(config) for i in range(config.depth)])
         self.unembed = nn.Sequential(*[
                                   nn.LayerNorm((d_model)),
                                   nn.Linear(d_model, config.vocab_size, bias=True),
@@ -132,7 +117,6 @@ class Transformer(nn.Module):
 
     def forward(self, x):
         x = self.embed(x)
-        for (i, (attention, mlp)) in enumerate(zip(self.attentions, self.mlps)):
-            x = x + attention(x)
-            x = x + mlp(x)
+        for (i, block) in enumerate(self.blocks):
+            x = x + block(x)
         return self.unembed(x)
