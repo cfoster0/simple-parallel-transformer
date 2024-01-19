@@ -8,7 +8,6 @@ from opt_einsum import contract
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
 
-from mamba_ssm import Mamba
 
 @dataclass
 class Config:
