@@ -70,8 +70,8 @@ class Block(nn.Module):
         self.d_expanded = self.d_model * config.expansion_factor
         self.d_head = (self.d_expanded) // self.heads
         
-        self.ln_1 = nn.LayerNorm(self.d_model)
-        self.ln_2 = nn.LayerNorm(self.d_model)
+        self.in_ln = nn.LayerNorm(self.d_model)
+        self.out_ln = nn.LayerNorm(self.d_model)
         self.in_proj = nn.Linear(self.d_model, self.d_expanded * 4, bias=False)
         self.out_proj = nn.Linear(self.d_expanded, self.d_model, bias=False)
         nn.init.normal_(self.out_proj.weight, mean=0.0, std=0.02/sqrt(2 * config.depth))
@@ -83,7 +83,7 @@ class Block(nn.Module):
     def forward(self, x):
         b, l, d = x.shape
 
-        q, k, v, p = torch.split(self.in_proj(self.ln_1(x)), [
+        q, k, v, p = torch.split(self.in_proj(self.in_ln(x)), [
                                    self.d_expanded,
                                    self.d_expanded,
                                    self.d_expanded,
@@ -95,7 +95,7 @@ class Block(nn.Module):
         logits = contract("b h i d, b h j d -> b h i j", q, k) * (self.d_head ** -0.5)
         a = F.softmax(self.causal_bias[..., :l, :l] + self.alibi(logits), dim=-1)
         o = F.silu(p) * rearrange(contract("b h i j, b h j d -> b h i d", a, v), "b h i d -> b i (h d)")
-        return self.ln_2(self.out_proj(o))
+        return self.out_ln(self.out_proj(o))
 
 class Transformer(nn.Module):
     def __init__(self, config: Config):
