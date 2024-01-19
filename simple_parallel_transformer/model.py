@@ -14,7 +14,7 @@ class Config:
     """Class for keeping track of config variables."""
     depth: int
     heads: int
-    d_head: int
+    d_model: int
     vocab_size: int
     expansion_factor: int = 2
     max_seq_len: int = 2048
@@ -66,14 +66,14 @@ class Block(nn.Module):
         """
         super(Block, self).__init__()
         self.heads = config.heads
-        self.d_head = config.d_head
-        self.d_model = self.heads * self.d_head
-        self.expansion_factor = config.expansion_factor
+        self.d_model = config.d_model
+        self.d_expanded = self.d_model * config.expansion_factor
+        self.d_head = (self.d_expanded) // self.heads
         
         self.ln_1 = nn.LayerNorm(self.d_model)
         self.ln_2 = nn.LayerNorm(self.d_model)
-        self.in_proj = nn.Linear(self.d_model, self.expansion_factor * (self.d_model * 4), bias=False)
-        self.out_proj = nn.Linear(self.expansion_factor * self.d_model, self.d_model, bias=False)
+        self.in_proj = nn.Linear(self.d_model, self.d_expanded * 4, bias=False)
+        self.out_proj = nn.Linear(self.d_expanded, self.d_model, bias=False)
         nn.init.normal_(self.out_proj.weight, mean=0.0, std=0.02/sqrt(2 * config.depth))
         causal_mask = torch.tril(torch.ones((config.max_seq_len, config.max_seq_len)))
         self.register_buffer('causal_bias', rearrange(-1e10 * (1. - causal_mask), "i j -> () () i j"))
@@ -84,15 +84,15 @@ class Block(nn.Module):
         b, l, d = x.shape
 
         q, k, v, p = torch.split(self.in_proj(self.ln_1(x)), [
-                                   self.expansion_factor * self.d_model,
-                                   self.expansion_factor * self.d_model,
-                                   self.expansion_factor * self.d_model,
-                                   self.expansion_factor * self.d_model,
+                                   self.d_expanded,
+                                   self.d_expanded,
+                                   self.d_expanded,
+                                   self.d_expanded,
                                    ], -1)
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
         smear = F.sigmoid(self.smear_factor)[None, :, None, None]
         k = ((1 - smear) * k) + (smear * F.pad(k, (0, 0, 1, -1)))
-        logits = contract("b h i d, b h j d -> b h i j", q, k) * ((self.expansion_factor * self.d_head) ** -0.5)
+        logits = contract("b h i d, b h j d -> b h i j", q, k) * (self.d_head ** -0.5)
         a = F.softmax(self.causal_bias[..., :l, :l] + self.alibi(logits), dim=-1)
         o = F.silu(p) * rearrange(contract("b h i j, b h j d -> b h i d", a, v), "b h i d -> b i (h d)")
         return self.ln_2(self.out_proj(o))
@@ -105,13 +105,12 @@ class Transformer(nn.Module):
         super(Transformer, self).__init__()
         self.max_seq_len = config.max_seq_len
         self.sos_index = config.vocab_size
-        d_model = config.heads * config.d_head
         
-        self.embed = nn.Embedding(config.vocab_size + 1, d_model)
+        self.embed = nn.Embedding(config.vocab_size + 1, config.d_model)
         self.blocks = nn.ModuleList([Block(config) for i in range(config.depth)])
         self.unembed = nn.Sequential(*[
-                                  nn.LayerNorm((d_model)),
-                                  nn.Linear(d_model, config.vocab_size, bias=True),
+                                  nn.LayerNorm((config.d_model)),
+                                  nn.Linear(config.d_model, config.vocab_size, bias=True),
                                   ])
 
     def forward(self, x):
