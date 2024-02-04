@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from math import sqrt, log
-from einops import rearrange
+from math import sqrt
+from einops import rearrange, repeat
 from opt_einsum import contract
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
@@ -25,19 +25,6 @@ cs = ConfigStore.instance()
 cs.store(name="config", node=Config)
 
 
-class LearnedALiBi(nn.Module):
-    def __init__(self, heads):
-        super().__init__()
-        slopes = torch.cat([torch.logspace(0., -6., steps=heads//2, base=2.), torch.zeros(heads - (heads//2))], dim=0)
-        self.slopes = nn.Parameter(rearrange(slopes, 'h -> () h () ()'))
-
-    def forward(self, qk_dots):
-        h, i, j, device = *qk_dots.shape[-3:], qk_dots.device
-
-        bias = rearrange(torch.arange(j, device = device), 'j -> () () () j') * self.slopes
-        bias = F.pad(bias, (0, 0, 0, 0, 0, h - bias.shape[1]))
-        return qk_dots + bias
-    
 
 class Block(nn.Module):
     def __init__(self, config: Config):
@@ -53,8 +40,7 @@ class Block(nn.Module):
             internal dimension to be larger than the residual dimension.
         (3) Smeared keys on each head, to facilitate learning of previous-token
             heads, induction heads, and n-grams.
-        (4) learned per-head linear biases on the attention logits similar 
-            to ALiBi; half of heads are initialized as nonspatial
+        (4) per-head linear biases on the attention logits from ALiBi; half of heads are initialized as nonspatial
 
         ---
         References:
@@ -70,16 +56,18 @@ class Block(nn.Module):
         self.d_expanded = self.d_model * config.expansion_factor
         self.d_head = (self.d_expanded) // self.heads
         
+        l = config.max_seq_len
+        
         self.in_ln = nn.LayerNorm(self.d_model)
         self.out_ln = nn.LayerNorm(self.d_model)
         self.in_proj = nn.Linear(self.d_model, self.d_expanded * 4, bias=False)
         self.out_proj = nn.Linear(self.d_expanded, self.d_model, bias=False)
         nn.init.normal_(self.out_proj.weight, mean=0.0, std=0.02/sqrt(2 * config.depth))
-        causal_mask = torch.tril(torch.ones((config.max_seq_len, config.max_seq_len)))
-        self.register_buffer('causal_bias', rearrange(-1e10 * (1. - causal_mask), "i j -> () () i j"))
-        self.alibi = LearnedALiBi(self.heads)
+        slopes = torch.cat([torch.logspace(0., -8., steps=self.heads//2, base=2.), torch.zeros(self.heads - (self.heads//2))], dim=0)
+        mask = (slopes[:, None, None] * torch.arange(l)[None, None, :]) + torch.triu(-1e10 * torch.ones((l, l)), diagonal=1)[None, :, :]
+        self.register_buffer('mask', mask)
         self.smear_factor = nn.Parameter(torch.linspace(-6., 6., self.heads))
-        self.log_temperature = nn.Parameter(torch.full((self.heads,), fill_value=log(self.d_head ** 0.5)))
+        self.log_scale = nn.Parameter(torch.zeros(self.heads))
         
     def forward(self, x):
         b, l, d = x.shape
@@ -93,11 +81,11 @@ class Block(nn.Module):
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
         smear = F.sigmoid(self.smear_factor)[None, :, None, None]
         k = ((1 - smear) * k) + (smear * F.pad(k, (0, 0, 1, -1)))
-        t = torch.exp(self.log_temperature)[None, :, None, None]
-        logits = contract("b h i d, b h j d -> b h i j", q, k) / t
-        a = F.softmax(self.causal_bias[..., :l, :l] + self.alibi(logits), dim=-1)
-        o = F.silu(p) * rearrange(contract("b h i j, b h j d -> b h i d", a, v), "b h i d -> b i (h d)")
-        return self.out_ln(self.out_proj(o))
+        s = torch.exp(self.log_scale)[None, :, None, None]
+        mask = repeat(self.mask[:, :l, :l], "h i j -> b h i j", b=b)
+        o = F.scaled_dot_product_attention(q / s, k / s, v, attn_mask=mask)
+        o = rearrange(o, "b h i d -> b i (h d)")
+        return self.out_ln(self.out_proj(F.silu(p) * o))
 
 class Transformer(nn.Module):
     def __init__(self, config: Config):
