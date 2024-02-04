@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from math import sqrt
+from math import sqrt, log
 from einops import rearrange
 from opt_einsum import contract
 from dataclasses import dataclass
@@ -79,6 +79,7 @@ class Block(nn.Module):
         self.register_buffer('causal_bias', rearrange(-1e10 * (1. - causal_mask), "i j -> () () i j"))
         self.alibi = LearnedALiBi(self.heads)
         self.smear_factor = nn.Parameter(torch.linspace(-6., 6., self.heads))
+        self.log_temperature = nn.Parameter(torch.full((self.heads,), fill_value=log(self.d_head ** 0.5)))
         
     def forward(self, x):
         b, l, d = x.shape
@@ -92,7 +93,8 @@ class Block(nn.Module):
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
         smear = F.sigmoid(self.smear_factor)[None, :, None, None]
         k = ((1 - smear) * k) + (smear * F.pad(k, (0, 0, 1, -1)))
-        logits = contract("b h i d, b h j d -> b h i j", q, k) * (self.d_head ** -0.5)
+        t = torch.exp(self.log_temperature)[None, :, None, None]
+        logits = contract("b h i d, b h j d -> b h i j", q, k) / t
         a = F.softmax(self.causal_bias[..., :l, :l] + self.alibi(logits), dim=-1)
         o = F.silu(p) * rearrange(contract("b h i j, b h j d -> b h i d", a, v), "b h i d -> b i (h d)")
         return self.out_ln(self.out_proj(o))
