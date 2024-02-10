@@ -25,6 +25,13 @@ cs = ConfigStore.instance()
 cs.store(name="config", node=Config)
 
 
+def linear_attention(q, k, v, mask, eps=1e-5):
+    """
+    Apply causal linear attention to q, k, and v, with a multiplicative mask that can be used for ALiBi-like decay.
+    """
+    attn = torch.tril(contract("... i d , ... j d -> ... i j", q, k) * mask)
+    norm = 1. / (attn.sum(dim=-1) + eps)
+    return contract("... i j, ... i , ... j d -> ... i d", attn, norm, v)
 
 class Block(nn.Module):
     def __init__(self, config: Config):
@@ -34,13 +41,15 @@ class Block(nn.Module):
         (1) Cogview's Sandwich Layer Norm, which puts a LayerNorm at the start 
             and end of the block
         (2) Single-block design from Gated Attention Unit, by way of Mamba.
-            Instead of a separate attention and feedforward layer, combines
-            them in parallel as a gated attention layer, with the gating being
+            Instead of a separate feedforward layer, combines
+            them in parallel as a gated mixer layer, with the gating being
             passed into a SiLu/SwiGLU activation function. Also expands the
             internal dimension to be larger than the residual dimension.
         (3) Smeared keys on each head, to facilitate learning of previous-token
             heads, induction heads, and n-grams.
-        (4) per-head linear biases on the attention logits from ALiBi; half of heads are initialized as nonspatial
+        (4) attention replaced with linear attention with learned feature maps with "spiky" softmax activations,
+            inspired by Hedgehog; implicitly folded into the query & key projections, each head is initialized with zeroed weights & biases
+        (5) per-head exponential decay on the linear attention, similar to ALiBi; half of heads are initialized as nonspatial
 
         ---
         References:
@@ -48,6 +57,7 @@ class Block(nn.Module):
         GAU - https://arxiv.org/abs/2202.10447
         Mamba - https://arxiv.org/abs/2312.00752
         Smeared Key - https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html
+        Hedgehog - https://arxiv.org/abs/2402.04347
         ALiBi - https://arxiv.org/abs/2108.12409
         """
         super(Block, self).__init__()
@@ -56,34 +66,48 @@ class Block(nn.Module):
         self.d_expanded = self.d_model * config.expansion_factor
         self.d_head = (self.d_expanded) // self.heads
         
-        l = config.max_seq_len
-        
         self.in_ln = nn.LayerNorm(self.d_model)
+        self.q_ln = nn.LayerNorm(self.d_model)
+        self.k_ln = nn.LayerNorm(self.d_model)
         self.out_ln = nn.LayerNorm(self.d_model)
-        self.in_proj = nn.Linear(self.d_model, self.d_expanded * 4, bias=False)
+        self.in_proj = nn.Linear(self.d_model, self.d_expanded * 2, bias=False)
         self.out_proj = nn.Linear(self.d_expanded, self.d_model, bias=False)
         nn.init.normal_(self.out_proj.weight, mean=0.0, std=0.02/sqrt(2 * config.depth))
-        slopes = torch.cat([torch.logspace(0., -8., steps=self.heads//2, base=2.), torch.zeros(self.heads - (self.heads//2))], dim=0)
-        mask = (slopes[:, None, None] * torch.arange(l)[None, None, :]) + torch.triu(-1e10 * torch.ones((l, l)), diagonal=1)[None, :, :]
-        self.register_buffer('mask', mask)
         self.smear_factor = nn.Parameter(torch.linspace(-6., 6., self.heads))
-        self.log_scale = nn.Parameter(torch.zeros(self.heads))
+        self.log_scale = nn.Parameter((torch.ones(self.heads) * (self.d_head ** 0.25)).log())
+
+        alibi = (torch.logspace(0, -8, self.heads // 2, base=2)[:, None, None] * -F.relu(torch.arange(config.max_seq_len)[:, None] - torch.arange(config.max_seq_len)[None, :])[None, :, :])
+        self.register_buffer('mask', torch.cat([alibi, torch.zeros_like(alibi)]).exp())
+
+        self.f_qproj = nn.Linear(self.d_model, self.d_expanded, bias=True)
+        nn.init.zeros_(self.f_qproj.weight)
+        nn.init.zeros_(self.f_qproj.bias)
+        self.f_kproj = nn.Linear(self.d_model, self.d_expanded, bias=True)
+        nn.init.zeros_(self.f_kproj.weight)
+        nn.init.zeros_(self.f_kproj.bias)
         
     def forward(self, x):
         b, l, d = x.shape
 
-        q, k, v, p = torch.split(self.in_proj(self.in_ln(x)), [
-                                   self.d_expanded,
-                                   self.d_expanded,
+        v, p = torch.split(self.in_proj(self.in_ln(x)), [
                                    self.d_expanded,
                                    self.d_expanded,
                                    ], -1)
-        (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
         smear = F.sigmoid(self.smear_factor)[None, :, None, None]
-        k = ((1 - smear) * k) + (smear * F.pad(k, (0, 0, 1, -1)))
         s = torch.exp(self.log_scale)[None, :, None, None]
-        mask = repeat(self.mask[:, :l, :l], "h i j -> b h i j", b=b)
-        o = F.scaled_dot_product_attention(q / s, k / s, v, attn_mask=mask)
+
+        q = self.f_qproj(self.q_ln(x))
+        k = self.f_kproj(self.k_ln(x))
+        
+        
+        (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
+        
+        q = F.softmax(q, dim=-1)
+        k = F.softmax(k, dim=-1)
+        
+        k = ((1 - smear) * k) + (smear * F.pad(k, (0, 0, 1, -1)))
+        
+        o = linear_attention(q/s, k/s, v, self.mask[:, :l, :l])
         o = rearrange(o, "b h i d -> b i (h d)")
         return self.out_ln(self.out_proj(F.silu(p) * o))
 
@@ -108,3 +132,4 @@ class Transformer(nn.Module):
         for (i, block) in enumerate(self.blocks):
             x = x + block(x)
         return self.unembed(x)
+
