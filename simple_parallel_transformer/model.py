@@ -66,10 +66,7 @@ class Block(Module):
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
         dpos = sigmoid(rearrange(posemb, "b i h -> b h i"))
         smear = rearrange(sigmoid(smear), "b j h -> b h j")[..., None]
-        k = ((1 - smear) * k) + (smear * pad(k, (0, 0, 1, -1)))
         scale = exp(self.log_scale)[None, :, None, None]
-        q = q / scale
-        k = k / scale
         if prefill:
             self.k_cache = k
             self.v_cache = v
@@ -83,7 +80,10 @@ class Block(Module):
             self.k_cache = k
             self.v_cache = v
             self.dpos_cache = dpos
-        
+
+        q = q / scale
+        k = ((1 - smear) * k) + (smear * pad(k, (0, 0, 1, -1)))
+        k = k / scale
         pos = dpos.cumsum(dim=-1)
         relpos = pos[..., None] - pos[..., None, :]
         mask = triu(-1e10 * ones((i, i), device=device), diagonal=1) - relpos
