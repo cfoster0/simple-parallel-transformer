@@ -2,7 +2,7 @@ from einops import rearrange
 from opt_einsum import contract
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
-from torch import zeros, ones, exp, linspace, triu, split, normal
+from torch import cat, zeros, ones, exp, linspace, triu, split, normal
 from torch.nn import Module, Embedding, Linear, LayerNorm, ModuleList, Sequential, Parameter
 from torch.nn.init import normal_
 from torch.nn.functional import pad, sigmoid, silu, scaled_dot_product_attention
@@ -55,18 +55,41 @@ class Block(Module):
         self.log_scale = Parameter(zeros(self.heads))
         self.out_proj = Linear(self.d_expanded, self.d_model, bias=False)
         normal_(self.out_proj.weight, mean=0.0, std=0.02 * ((2 * config.depth) ** -0.5))
+
+        self.register_buffer('k_cache', zeros((1, self.heads, 0, self.d_head)))
+        self.register_buffer('v_cache', zeros((1, self.heads, 0, self.d_head)))
+        self.register_buffer('dpos_cache', zeros((1, self.heads, 0)))
         
-    def forward(self, x):
+    def forward(self, x, prefill=False, decode=False):
         (b, i, d), device = (x.shape, x.device)
-        q, k, v, p, smear, dpos = self.in_proj(self.in_ln(x))
+        q, k, v, p, smear, posemb = self.in_proj(self.in_ln(x))
         (q, k, v) = map(lambda x: rearrange(x, "b i (h d) -> b h i d", h=self.heads), (q, k, v))
+        dpos = sigmoid(rearrange(posemb, "b i h -> b h i"))
         smear = rearrange(sigmoid(smear), "b j h -> b h j")[..., None]
         k = ((1 - smear) * k) + (smear * pad(k, (0, 0, 1, -1)))
         scale = exp(self.log_scale)[None, :, None, None]
-        pos = sigmoid(rearrange(dpos, "b i h -> b h i")).cumsum(dim=-1)
+        q = q / scale
+        k = k / scale
+        if prefill:
+            self.k_cache = k
+            self.v_cache = v
+            self.dpos_cache = dpos
+
+        if decode:
+            k = cat([self.k_cache, k], dim=2)
+            v = cat([self.v_cache, v], dim=2)
+            dpos = cat([self.dpos_cache, dpos], dim=2)
+
+            self.k_cache = k
+            self.v_cache = v
+            self.dpos_cache = dpos
+        
+        pos = dpos.cumsum(dim=-1)
         relpos = pos[..., None] - pos[..., None, :]
         mask = triu(-1e10 * ones((i, i), device=device), diagonal=1) - relpos
-        o = scaled_dot_product_attention(q / scale, k / scale, v, attn_mask=mask)
+        if decode:
+            mask = mask[:, :, -i:, :]
+        o = scaled_dot_product_attention(q, k, v, attn_mask=mask)
         o = rearrange(o, "b h i d -> b i (h d)")
         return self.out_ln(self.out_proj(silu(p) * o))
 
@@ -82,8 +105,8 @@ class Transformer(Module):
                                   Linear(config.d_model, config.vocab_size, bias=True),
                                   ])
 
-    def forward(self, x):
+    def forward(self, x, prefill=False, decode=False):
         x = self.embed(x)
         for block in self.blocks:
-            x = x + block(x)
+            x = x + block(x, prefill=prefill, decode=decode)
         return self.unembed(x)
