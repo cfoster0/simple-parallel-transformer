@@ -51,14 +51,9 @@ class AutoregressiveWrapper(nn.Module):
 
         self.net.eval()
         out = F.pad(start_tokens, (1, 0), value=self.net.sos_index)
-        mask = kwargs.pop('mask', None)
-
-        if mask is None:
-            mask = torch.full_like(out, True, dtype=torch.bool, device=out.device)
 
         for _ in range(seq_len):
             x = out[:, -self.max_seq_len:]
-            mask = mask[:, -self.max_seq_len:]
 
             logits = self.net(x, **kwargs)[:, -1, :]
 
@@ -69,7 +64,6 @@ class AutoregressiveWrapper(nn.Module):
             sample = torch.multinomial(probs, 1)
 
             out = torch.cat((out, sample), dim=-1)
-            mask = F.pad(mask, (0, 1), value=True)
 
             if eos_token is not None and (sample == eos_token).all():
                 break
