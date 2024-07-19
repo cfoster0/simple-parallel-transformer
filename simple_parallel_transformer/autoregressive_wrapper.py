@@ -44,6 +44,7 @@ class AutoregressiveWrapper(nn.Module):
         was_training = self.net.training
         num_dims = len(start_tokens.shape)
 
+        assert num_dims == 1, "AutoregressiveWrapper only generates with bs=1"
         if num_dims == 1:
             start_tokens = start_tokens[None, :]
 
@@ -52,10 +53,13 @@ class AutoregressiveWrapper(nn.Module):
         self.net.eval()
         out = F.pad(start_tokens, (1, 0), value=self.net.sos_index)
 
-        for _ in range(seq_len):
-            x = out[:, -self.max_seq_len:]
-
-            logits = self.net(x, **kwargs)[:, -1, :]
+        for i in range(seq_len):
+            if i == 0:
+                x = out[:, -self.max_seq_len:]
+                logits = self.net(x, prefill=True, **kwargs)[:, -1, :]
+            else:
+                x = out[:, -1:]
+                logits = self.net(x, decode=True, **kwargs)[:, -1, :]
 
             if filter_logits_fn in {top_k, top_p}:
                 filtered_logits = filter_logits_fn(logits, thres = filter_thres)
